@@ -6,15 +6,33 @@ Cipher Hub is a comprehensive, containerized key management service built in Go 
 
 The service abstracts away the complexity of cryptographic key management from application services, similar to how OAuth/OIDC standardizes authentication flows. Applications can focus on their core business logic while delegating all key-related operations to this specialized service.
 
+## Current Project Status: Phase 2.1 HTTP Server Infrastructure In Progress 🔄
+
+**Phase 1 Foundation**: ✅ Complete - All core models, storage interface, and validation implemented with comprehensive testing and security-first design patterns.
+
+**Phase 2.1 Progress**: 
+- ✅ **HTTP Server Structure** - ServerConfig pattern with comprehensive validation and security bounds established
+- ✅ **Configuration Architecture** - Structured configuration with environment variable foundation and secure defaults
+- ⏳ **HTTP Listener Implementation** - Currently implementing Start() method and server lifecycle management
+- 📋 **Middleware Infrastructure** - Next target following established security-first patterns
+
+**Key Architectural Decisions Made**:
+- **HTTP Stack**: Go standard library with enhanced routing patterns for security and simplicity
+- **Configuration Pattern**: Structured ServerConfig with environment variable support and comprehensive validation
+- **Security Approach**: Input validation with injection prevention, timeout bounds, and audit-ready logging
+- **Context Management**: Typed context keys with graceful shutdown coordination and timeout management
+
 ### Design Philosophy
 
 **Security First**: Every design decision prioritizes security over convenience. Key material is never exposed in logs, serialization, or memory dumps. All operations include comprehensive validation and audit trails.
 
-**Go Standard Library Focus**: Leverages Go's robust standard library extensively to minimize external dependencies and maintain security audit simplicity.
+**Go Standard Library Focus**: Leverages Go's robust standard library extensively to minimize external dependencies and maintain security audit simplicity. Technical decisions favor standard library solutions over third-party alternatives.
 
 **Container-Native**: Built specifically for containerized environments with sidecar deployment patterns, health checks, and graceful shutdown procedures.
 
 **Extensibility Through Metadata**: Core entities use flexible metadata patterns instead of rigid enums, allowing extension without code changes while maintaining type safety where security is critical.
+
+**Session-Based Development**: Granular development approach with 20-30 minute implementation steps, comprehensive testing, and incremental progress validation.
 
 ## Core Capabilities
 
@@ -29,11 +47,12 @@ The system manages service registrations as logical containers for related parti
 - **Audit Integration**: Complete audit trails for all service and participant operations
 
 **Data Model Design:**
-- `ServiceRegistration`: Container with ID, name, description, timestamps, and metadata
+- `ServiceRegistration`: Container with ID, name, description, timestamps, and extensible metadata
 - `Participant`: Entity with flexible typing via metadata instead of rigid enums
 - Proper Go idioms with `(Type, error)` constructors and comprehensive validation
+- Security-conscious serialization with `json:"-"` tags for sensitive fields
 
-### Comprehensive Key Lifecycle Management
+### Comprehensive Key Lifecycle Management (Planned)
 
 **Key Generation**: Creates cryptographically secure keys using Go's `crypto/rand` package for multiple symmetric and asymmetric algorithms. Initial implementation focuses on AES-256 with extensible algorithm enum design.
 
@@ -47,7 +66,7 @@ The system manages service registrations as logical containers for related parti
 
 **Key Security Protocols**: Secure key serialization prevention, memory cleanup procedures, and access pattern monitoring.
 
-### Security Architecture
+### Security Architecture (Implementation In Progress)
 
 **Authentication**: Multi-layered authentication supporting API keys, JWT tokens, and mutual TLS with secure key generation and validation mechanisms.
 
@@ -59,7 +78,7 @@ The system manages service registrations as logical containers for related parti
 
 **Secure Communication**: TLS-encrypted communication with certificate validation, mutual TLS support, and secure protocol enforcement.
 
-### Operational Excellence
+### Operational Excellence (Planned)
 
 **High Availability**: Designed for distributed deployment with leader election, state synchronization, and split-brain prevention mechanisms.
 
@@ -71,13 +90,33 @@ The system manages service registrations as logical containers for related parti
 
 ## Technical Architecture
 
+### HTTP Server Infrastructure (Phase 2.1 - Current Implementation)
+
+**Structured Configuration Pattern**: Established `ServerConfig` approach with comprehensive validation, secure defaults, and environment variable integration. The pattern provides:
+- Security-conscious input validation with injection attack prevention (hostname, port, timeout validation)
+- Configurable timeouts with reasonable security bounds (1s minimum, 5min maximum)
+- Environment-based CORS origin configuration (not hard-coded for operational flexibility)
+- Graceful shutdown with configurable timeout management and context coordination
+
+**Standard Library Foundation**: Leveraging Go 1.22+ enhanced HTTP routing patterns with:
+- `net/http` server implementation with proper lifecycle management and security headers
+- Middleware function chaining with conditional application support for different environments
+- Structured JSON logging using `log/slog` for container-native observability
+- Context-aware operations with typed context keys for security and request correlation
+
+**Container-Native Health Checks**: Implementing dependency-aware health monitoring with:
+- Liveness endpoints for basic operational status verification
+- Readiness endpoints with actual dependency validation and detailed status reporting
+- Interface-based health checker pattern for extensibility across storage and external dependencies
+- JSON response format with detailed component status and correlation IDs
+
 ### Container-First Design
 
 Built specifically for containerized environments with comprehensive support for:
 
 **Sidecar Deployment Patterns**: Designed to run alongside application containers within container orchestration platforms, providing cryptographic services without requiring application code changes.
 
-**Environment-Based Configuration**: Complete environment variable support with secure defaults, configuration validation, and runtime configuration capabilities.
+**Environment-Based Configuration**: Complete environment variable support with secure defaults, configuration validation, and runtime configuration capabilities. CORS origins configurable per deployment environment rather than hard-coded.
 
 **Health Check Integration**: Readiness and liveness endpoints for container health monitoring with service dependency checks and deep health validation.
 
@@ -124,24 +163,27 @@ Leverages Go's robust standard library extensively to minimize external dependen
 
 **Transaction Management**: Proper database transaction handling with rollback capabilities and consistency guarantees.
 
-### HTTP API Architecture
+### HTTP API Architecture (Implementation In Progress)
 
 **RESTful Design Principles**: Clean REST API design with proper HTTP methods, status codes, and resource-oriented endpoints.
 
 **Middleware Pattern**: Comprehensive middleware stack including:
-- Request logging and correlation ID generation
-- Authentication and authorization enforcement
-- CORS handling and security headers
-- Error response formatting and consistency
-- Rate limiting and abuse prevention
+- Request logging and correlation ID generation using cryptographically secure random IDs
+- Authentication and authorization enforcement with proper error handling
+- CORS handling with environment-configurable origins for operational flexibility
+- Error response formatting with structured JSON and request tracing
+- Security headers with conditional HSTS (HTTPS-only) and comprehensive protection
+- Rate limiting and abuse prevention with configurable thresholds
 
 **Request/Response Standards**: Consistent JSON API format with proper error response structures, input validation, and API versioning strategy.
 
-**Security Headers**: Comprehensive security header implementation including CSP, HSTS, and other security-focused HTTP headers.
+**Security Headers**: Comprehensive security header implementation including CSP, HSTS (conditional), X-Frame-Options, and other security-focused HTTP headers.
 
 ### Error Handling Strategy
 
 **Go Idiomatic Error Handling**: Proper error handling throughout with error wrapping, error type definitions, and comprehensive error context.
+
+**Consistent Error Patterns**: Structured error prefixes (e.g., `ServerConfigErrorPrefix`) for consistent error categorization and debugging.
 
 **Graceful Degradation**: System continues to operate in degraded modes when possible with proper fallback mechanisms.
 
@@ -162,6 +204,26 @@ Leverages Go's robust standard library extensively to minimize external dependen
 **Fail Securely**: System fails to secure states with proper error handling that doesn't leak sensitive information.
 
 ## Implementation Standards
+
+### Established Development Patterns
+
+**Session-Based Development**: Granular 20-30 minute development steps with:
+- Hierarchical task breakdown (Phase → Target → Task → Step)
+- Incremental progress with clear completion criteria and validation
+- Comprehensive testing requirements at each step with security focus
+- Documentation updates concurrent with implementation
+
+**Configuration Architecture**: Structured configuration with:
+- Constructor pattern: `NewServer(config ServerConfig) (*Server, error)`
+- Validation-first design with comprehensive error messages and security bounds
+- Environment variable support with secure defaults and flexible deployment options
+- Extensible design supporting future enhancement phases without breaking changes
+
+**Security Implementation Patterns**: 
+- Consistent error prefixes for structured error handling and debugging
+- Comprehensive input validation preventing injection attacks and malicious input
+- Context-based request lifecycle management with typed context keys
+- Audit-ready logging without sensitive data exposure under any circumstances
 
 ### Code Quality Requirements
 
@@ -197,7 +259,23 @@ Leverages Go's robust standard library extensively to minimize external dependen
 
 ## Security Compliance
 
-### Data Protection
+### Implemented Security Measures
+
+**Input Validation Security**: Production-ready validation including:
+- RFC-compliant hostname validation with malicious input detection and rejection
+- Port range validation with security bounds checking (1-65535)
+- Timeout bounds validation preventing resource exhaustion attacks
+- Path injection prevention (blocks `../../../etc/passwd` and similar attacks)
+- Script injection prevention (blocks `<script>` tags and XSS attempts)
+- Comprehensive error messages that don't leak sensitive system information
+
+**Configuration Security**: Environment-driven security settings:
+- CORS origins configurable per deployment environment for operational flexibility
+- Security headers with conditional HSTS (HTTPS-only) for proper TLS enforcement
+- Timeout configuration with secure defaults and maximum limits to prevent abuse
+- Context-based shutdown management with proper resource cleanup
+
+### Data Protection (Planned)
 
 **Key Material Protection**: Cryptographic keys never appear in logs, serialized output, memory dumps, or error messages.
 
@@ -207,7 +285,7 @@ Leverages Go's robust standard library extensively to minimize external dependen
 
 **Access Pattern Monitoring**: Monitoring and alerting for unusual key access patterns and potential security threats.
 
-### Audit Requirements
+### Audit Requirements (Planned)
 
 **Comprehensive Audit Trails**: Complete logging of all operations affecting keys, participants, and service registrations.
 
@@ -217,7 +295,7 @@ Leverages Go's robust standard library extensively to minimize external dependen
 
 **Log Retention Policies**: Configurable log retention with secure log archival and disposal procedures.
 
-### Authentication and Authorization
+### Authentication and Authorization (Planned)
 
 **Multi-Factor Authentication**: Support for multiple authentication mechanisms with proper credential management.
 
@@ -229,6 +307,12 @@ Leverages Go's robust standard library extensively to minimize external dependen
 
 ---
 
-*Technical Specification Version: 1.2*  
+> **Implementation Reference**: For detailed implementation patterns, code examples, and development standards, 
+> refer to [`style-guide.md`](./style-guide.md) which serves as the authoritative implementation reference.
+> This specification focuses on high-level architecture and capabilities.
+
+---
+
+*Technical Specification Version: 1.5*  
 *Last Updated: Current Session*  
-*Status: Foundation Complete, HTTP Infrastructure In Progress*
+*Status: Phase 1 Foundation Complete, Phase 2.1 HTTP Infrastructure In Progress*
