@@ -1,0 +1,531 @@
+package server
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestServerConfig_ApplyDefaults(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   ServerConfig
+		expected ServerConfig
+	}{
+		{
+			name: "apply all defaults",
+			config: ServerConfig{
+				Host: "localhost",
+				Port: "8080",
+				// All timeouts zero - should get defaults
+			},
+			expected: ServerConfig{
+				Host:            "localhost",
+				Port:            "8080",
+				ReadTimeout:     DefaultReadTimeout,
+				WriteTimeout:    DefaultWriteTimeout,
+				IdleTimeout:     DefaultIdleTimeout,
+				ShutdownTimeout: DefaultShutdownTimeout,
+			},
+		},
+		{
+			name: "preserve custom values",
+			config: ServerConfig{
+				Host:            "localhost",
+				Port:            "8080",
+				ReadTimeout:     30 * time.Second,
+				WriteTimeout:    45 * time.Second,
+				IdleTimeout:     120 * time.Second,
+				ShutdownTimeout: 60 * time.Second,
+			},
+			expected: ServerConfig{
+				Host:            "localhost",
+				Port:            "8080",
+				ReadTimeout:     30 * time.Second,
+				WriteTimeout:    45 * time.Second,
+				IdleTimeout:     120 * time.Second,
+				ShutdownTimeout: 60 * time.Second,
+			},
+		},
+		{
+			name: "mixed defaults and customs",
+			config: ServerConfig{
+				Host:        "localhost",
+				Port:        "8080",
+				ReadTimeout: 25 * time.Second,
+				// Other timeouts should get defaults
+			},
+			expected: ServerConfig{
+				Host:            "localhost",
+				Port:            "8080",
+				ReadTimeout:     25 * time.Second,
+				WriteTimeout:    DefaultWriteTimeout,
+				IdleTimeout:     DefaultIdleTimeout,
+				ShutdownTimeout: DefaultShutdownTimeout,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.config.ApplyDefaults()
+
+			if tt.config.ReadTimeout != tt.expected.ReadTimeout {
+				t.Errorf("ReadTimeout = %v, want %v", tt.config.ReadTimeout, tt.expected.ReadTimeout)
+			}
+			if tt.config.WriteTimeout != tt.expected.WriteTimeout {
+				t.Errorf("WriteTimeout = %v, want %v", tt.config.WriteTimeout, tt.expected.WriteTimeout)
+			}
+			if tt.config.IdleTimeout != tt.expected.IdleTimeout {
+				t.Errorf("IdleTimeout = %v, want %v", tt.config.IdleTimeout, tt.expected.IdleTimeout)
+			}
+			if tt.config.ShutdownTimeout != tt.expected.ShutdownTimeout {
+				t.Errorf("ShutdownTimeout = %v, want %v", tt.config.ShutdownTimeout, tt.expected.ShutdownTimeout)
+			}
+		})
+	}
+}
+
+func TestServerConfig_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  ServerConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid configuration",
+			config: ServerConfig{
+				Host:            "localhost",
+				Port:            "8080",
+				ReadTimeout:     15 * time.Second,
+				WriteTimeout:    15 * time.Second,
+				IdleTimeout:     60 * time.Second,
+				ShutdownTimeout: 30 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid IP address",
+			config: ServerConfig{
+				Host:            "127.0.0.1",
+				Port:            "3000",
+				ReadTimeout:     10 * time.Second,
+				WriteTimeout:    10 * time.Second,
+				IdleTimeout:     30 * time.Second,
+				ShutdownTimeout: 20 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid IPv6 address",
+			config: ServerConfig{
+				Host:            "::1",
+				Port:            "8080",
+				ReadTimeout:     15 * time.Second,
+				WriteTimeout:    15 * time.Second,
+				IdleTimeout:     60 * time.Second,
+				ShutdownTimeout: 30 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid domain name",
+			config: ServerConfig{
+				Host:            "example.com",
+				Port:            "8080",
+				ReadTimeout:     15 * time.Second,
+				WriteTimeout:    15 * time.Second,
+				IdleTimeout:     60 * time.Second,
+				ShutdownTimeout: 30 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty host",
+			config: ServerConfig{
+				Host: "",
+				Port: "8080",
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: host cannot be empty",
+		},
+		{
+			name: "empty port",
+			config: ServerConfig{
+				Host: "localhost",
+				Port: "",
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: port cannot be empty",
+		},
+		{
+			name: "invalid port format",
+			config: ServerConfig{
+				Host: "localhost",
+				Port: "abc",
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: invalid port format",
+		},
+		{
+			name: "port out of range low",
+			config: ServerConfig{
+				Host: "localhost",
+				Port: "0",
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: port must be between 1 and 65535",
+		},
+		{
+			name: "port out of range high",
+			config: ServerConfig{
+				Host: "localhost",
+				Port: "70000",
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: port must be between 1 and 65535",
+		},
+		{
+			name: "invalid hostname with path injection",
+			config: ServerConfig{
+				Host: "../../../etc/passwd",
+				Port: "8080",
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: invalid host format",
+		},
+		{
+			name: "invalid hostname with script injection",
+			config: ServerConfig{
+				Host: "<script>alert('xss')</script>",
+				Port: "8080",
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: invalid host format",
+		},
+		{
+			name: "negative read timeout",
+			config: ServerConfig{
+				Host:        "localhost",
+				Port:        "8080",
+				ReadTimeout: -5 * time.Second,
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: read_timeout cannot be negative",
+		},
+		{
+			name: "timeout below minimum",
+			config: ServerConfig{
+				Host:        "localhost",
+				Port:        "8080",
+				ReadTimeout: 500 * time.Millisecond, // Below MinTimeout
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: read_timeout must be at least",
+		},
+		{
+			name: "timeout above maximum",
+			config: ServerConfig{
+				Host:        "localhost",
+				Port:        "8080",
+				ReadTimeout: 10 * time.Minute, // Above MaxTimeout
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: read_timeout must not exceed",
+		},
+		{
+			name: "shutdown timeout above maximum",
+			config: ServerConfig{
+				Host:            "localhost",
+				Port:            "8080",
+				ShutdownTimeout: 5 * time.Minute, // Above MaxShutdownTimeout
+			},
+			wantErr: true,
+			errMsg:  "ServerConfig: shutdown_timeout must not exceed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("Validate() expected error, got nil")
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Validate() unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestServerConfig_Address(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   ServerConfig
+		expected string
+	}{
+		{
+			name: "localhost with standard port",
+			config: ServerConfig{
+				Host: "localhost",
+				Port: "8080",
+			},
+			expected: "localhost:8080",
+		},
+		{
+			name: "IP address with custom port",
+			config: ServerConfig{
+				Host: "192.168.1.1",
+				Port: "3000",
+			},
+			expected: "192.168.1.1:3000",
+		},
+		{
+			name: "IPv6 address",
+			config: ServerConfig{
+				Host: "::1",
+				Port: "8080",
+			},
+			expected: "[::1]:8080",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			address := tt.config.Address()
+			if address != tt.expected {
+				t.Errorf("Address() = %v, want %v", address, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNewServer(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  ServerConfig
+		wantErr bool
+	}{
+		{
+			name: "valid configuration with defaults",
+			config: ServerConfig{
+				Host: "localhost",
+				Port: "8080",
+				// Timeouts will be defaulted
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid configuration with custom timeouts",
+			config: ServerConfig{
+				Host:            "0.0.0.0",
+				Port:            "3000",
+				ReadTimeout:     30 * time.Second,
+				WriteTimeout:    30 * time.Second,
+				IdleTimeout:     120 * time.Second,
+				ShutdownTimeout: 45 * time.Second,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid configuration",
+			config: ServerConfig{
+				Host: "",
+				Port: "8080",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, err := NewServer(tt.config)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("NewServer() expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("NewServer() unexpected error: %v", err)
+				return
+			}
+
+			if server == nil {
+				t.Error("NewServer() returned nil server")
+				return
+			}
+
+			// Verify configuration is properly stored and defaults applied
+			config := server.Config()
+			if config.Host != tt.config.Host {
+				t.Errorf("Host = %v, want %v", config.Host, tt.config.Host)
+			}
+			if config.Port != tt.config.Port {
+				t.Errorf("Port = %v, want %v", config.Port, tt.config.Port)
+			}
+
+			// Verify defaults were applied for zero timeout values
+			if tt.config.ReadTimeout == 0 && config.ReadTimeout != DefaultReadTimeout {
+				t.Errorf("ReadTimeout default not applied: got %v, want %v", config.ReadTimeout, DefaultReadTimeout)
+			}
+			if tt.config.WriteTimeout == 0 && config.WriteTimeout != DefaultWriteTimeout {
+				t.Errorf("WriteTimeout default not applied: got %v, want %v", config.WriteTimeout, DefaultWriteTimeout)
+			}
+			if tt.config.IdleTimeout == 0 && config.IdleTimeout != DefaultIdleTimeout {
+				t.Errorf("IdleTimeout default not applied: got %v, want %v", config.IdleTimeout, DefaultIdleTimeout)
+			}
+			if tt.config.ShutdownTimeout == 0 && config.ShutdownTimeout != DefaultShutdownTimeout {
+				t.Errorf("ShutdownTimeout default not applied: got %v, want %v", config.ShutdownTimeout, DefaultShutdownTimeout)
+			}
+		})
+	}
+}
+
+func TestServer_Accessors(t *testing.T) {
+	config := ServerConfig{
+		Host:            "localhost",
+		Port:            "8080",
+		ReadTimeout:     20 * time.Second,
+		WriteTimeout:    25 * time.Second,
+		IdleTimeout:     90 * time.Second,
+		ShutdownTimeout: 40 * time.Second,
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Test all accessor methods
+	if server.Host() != "localhost" {
+		t.Errorf("Host() = %v, want %v", server.Host(), "localhost")
+	}
+
+	if server.Port() != "8080" {
+		t.Errorf("Port() = %v, want %v", server.Port(), "8080")
+	}
+
+	if server.PortNum() != 8080 {
+		t.Errorf("PortNum() = %v, want %v", server.PortNum(), 8080)
+	}
+
+	if server.Address() != "localhost:8080" {
+		t.Errorf("Address() = %v, want %v", server.Address(), "localhost:8080")
+	}
+
+	if server.ReadTimeout() != 20*time.Second {
+		t.Errorf("ReadTimeout() = %v, want %v", server.ReadTimeout(), 20*time.Second)
+	}
+
+	if server.WriteTimeout() != 25*time.Second {
+		t.Errorf("WriteTimeout() = %v, want %v", server.WriteTimeout(), 25*time.Second)
+	}
+
+	if server.IdleTimeout() != 90*time.Second {
+		t.Errorf("IdleTimeout() = %v, want %v", server.IdleTimeout(), 90*time.Second)
+	}
+
+	if server.ShutdownTimeout() != 40*time.Second {
+		t.Errorf("ShutdownTimeout() = %v, want %v", server.ShutdownTimeout(), 40*time.Second)
+	}
+}
+
+func TestServer_ShutdownContext(t *testing.T) {
+	config := ServerConfig{
+		Host:            "localhost",
+		Port:            "8080",
+		ShutdownTimeout: 5 * time.Second,
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	ctx := server.ShutdownContext()
+	if ctx == nil {
+		t.Error("ShutdownContext() returned nil")
+	}
+
+	// Verify context is not canceled initially
+	select {
+	case <-ctx.Done():
+		t.Error("ShutdownContext() should not be canceled initially")
+	default:
+		// Expected - context should be active
+	}
+
+	// Test shutdown cancellation
+	server.Shutdown()
+
+	// Verify context is canceled after shutdown
+	select {
+	case <-ctx.Done():
+		// Expected - context should be canceled
+	default:
+		t.Error("ShutdownContext() should be canceled after Shutdown()")
+	}
+}
+
+func TestServer_IsStarted(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "8080",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Server should not be started initially
+	if server.IsStarted() {
+		t.Error("IsStarted() should return false for new server")
+	}
+}
+
+func TestIsValidHostname(t *testing.T) {
+	tests := []struct {
+		name     string
+		hostname string
+		expected bool
+	}{
+		{"localhost", "localhost", true},
+		{"valid domain", "example.com", true},
+		{"subdomain", "api.example.com", true},
+		{"numeric domain", "123.example.com", true},
+		{"hyphenated domain", "my-api.example.com", true},
+		{"empty string", "", false},
+		{"too long", strings.Repeat("a", 254), false},
+		{"path injection", "../../../etc/passwd", false},
+		{"script injection", "<script>alert('xss')</script>", false},
+		{"quote injection", "test'ing", false},
+		{"double quote injection", "test\"ing", false},
+		{"label too long", strings.Repeat("a", 64) + ".com", false},
+		{"starts with hyphen", "-example.com", false},
+		{"ends with hyphen", "example-.com", false},
+		{"invalid characters", "exam@ple.com", false},
+		{"multiple dots", "example..com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isValidHostname(tt.hostname)
+			if result != tt.expected {
+				t.Errorf("isValidHostname(%q) = %v, want %v", tt.hostname, result, tt.expected)
+			}
+		})
+	}
+}

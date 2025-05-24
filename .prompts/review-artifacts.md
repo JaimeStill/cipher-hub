@@ -1,6 +1,6 @@
-# Review Core Artifacts
+# Review Artifacts
 
-Please analyze all of the following artifacts:
+Please analyze all of the following core artifacts:
 - `review.md`
 - `roadmap.md`
 - `spec.md`
