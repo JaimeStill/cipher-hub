@@ -1,4 +1,7 @@
-# Cipher Hub - Development Style Guide
+# Cipher Hub - Implementation Style Guide
+
+**Version**: 1.4  
+**Last Updated**: Current Session
 
 This style guide establishes consistent development practices for the Cipher Hub project. All code contributions must adhere to these standards to maintain security, quality, and maintainability.
 
@@ -94,6 +97,15 @@ const (
 
 #### Typed Context Keys
 ```go
+import (
+    "context"
+    "fmt"
+    "log/slog"
+    "net/url"
+    "strings"
+    "time"
+)
+
 // Correct: Use typed context keys for security
 type contextKey string
 
@@ -270,7 +282,7 @@ func (c *ServerConfig) Validate() error {
 }
 ```
 
-#### Structured Error Responses (Planned)
+#### Structured Error Responses
 ```go
 // Standard error response structure for APIs
 type ErrorResponse struct {
@@ -292,28 +304,174 @@ const (
 
 ### Environment-Based Configuration
 
-#### CORS Configuration Pattern
+#### General Configuration Pattern
+Configuration should be environment-driven with secure defaults and comprehensive validation. All configuration parameters should support environment variable loading with fallback to default values.
+
 ```go
-// Environment-configurable CORS origins (not hard-coded)
-func (c *Config) GetCORSOrigins() []string {
-    switch c.Environment {
-    case "development":
-        return []string{"http://localhost:3000", "http://localhost:8080"}
-    case "staging":
-        return []string{"https://staging.cipher-hub.com"}
-    case "production":
-        return []string{"https://cipher-hub.com"}
-    default:
-        return []string{} // Deny all for unknown environments
+import (
+    "fmt"
+    "net/url"
+    "os"
+    "strings"
+    "time"
+)
+
+// Comprehensive configuration structure
+type ServerConfig struct {
+    // Network configuration
+    Host        string        `json:"host"`
+    Port        string        `json:"port"`
+    
+    // Timeout configurations
+    ReadTimeout     time.Duration `json:"read_timeout"`
+    WriteTimeout    time.Duration `json:"write_timeout"`
+    IdleTimeout     time.Duration `json:"idle_timeout"`
+    ShutdownTimeout time.Duration `json:"shutdown_timeout"`
+    
+    // Security configuration
+    CORSOrigins     []string `json:"cors_origins"`
+    TLSCertFile     string   `json:"tls_cert_file"`
+    TLSKeyFile      string   `json:"tls_key_file"`
+    
+    // Application configuration
+    Environment     string `json:"environment"`
+    LogLevel        string `json:"log_level"`
+    DatabaseURL     string `json:"database_url"`
+}
+
+// LoadFromEnv populates configuration from environment variables
+func (c *ServerConfig) LoadFromEnv() error {
+    // Network configuration
+    if host := os.Getenv("CIPHER_HUB_HOST"); host != "" {
+        c.Host = host
     }
+    if port := os.Getenv("CIPHER_HUB_PORT"); port != "" {
+        c.Port = port
+    }
+    
+    // Timeout configuration with parsing
+    if readTimeout := os.Getenv("CIPHER_HUB_READ_TIMEOUT"); readTimeout != "" {
+        if duration, err := time.ParseDuration(readTimeout); err == nil {
+            c.ReadTimeout = duration
+        }
+    }
+    if writeTimeout := os.Getenv("CIPHER_HUB_WRITE_TIMEOUT"); writeTimeout != "" {
+        if duration, err := time.ParseDuration(writeTimeout); err == nil {
+            c.WriteTimeout = duration
+        }
+    }
+    
+    // Security configuration
+    if corsOriginsEnv := os.Getenv("CIPHER_HUB_CORS_ORIGINS"); corsOriginsEnv != "" {
+        c.CORSOrigins = parseCommaSeparatedList(corsOriginsEnv)
+    }
+    if certFile := os.Getenv("CIPHER_HUB_TLS_CERT_FILE"); certFile != "" {
+        c.TLSCertFile = certFile
+    }
+    if keyFile := os.Getenv("CIPHER_HUB_TLS_KEY_FILE"); keyFile != "" {
+        c.TLSKeyFile = keyFile
+    }
+    
+    // Application configuration
+    if env := os.Getenv("CIPHER_HUB_ENVIRONMENT"); env != "" {
+        c.Environment = env
+    }
+    if logLevel := os.Getenv("CIPHER_HUB_LOG_LEVEL"); logLevel != "" {
+        c.LogLevel = logLevel
+    }
+    if dbURL := os.Getenv("CIPHER_HUB_DATABASE_URL"); dbURL != "" {
+        c.DatabaseURL = dbURL
+    }
+    
+    return c.validateEnvironmentConfig()
+}
+
+// Helper function for parsing comma-separated lists
+func parseCommaSeparatedList(value string) []string {
+    items := strings.Split(value, ",")
+    result := make([]string, 0, len(items))
+    for _, item := range items {
+        if trimmed := strings.TrimSpace(item); trimmed != "" {
+            result = append(result, trimmed)
+        }
+    }
+    return result
+}
+
+// Validate environment-specific configuration
+func (c *ServerConfig) validateEnvironmentConfig() error {
+    // Validate CORS origins
+    for _, origin := range c.CORSOrigins {
+        if _, err := url.Parse(origin); err != nil {
+            return fmt.Errorf("invalid CORS origin format: %s", origin)
+        }
+    }
+    
+    // Validate TLS configuration
+    if (c.TLSCertFile != "") != (c.TLSKeyFile != "") {
+        return fmt.Errorf("both TLS cert and key files must be provided")
+    }
+    
+    // Validate environment
+    validEnvironments := []string{"development", "staging", "production"}
+    if c.Environment != "" && !contains(validEnvironments, c.Environment) {
+        return fmt.Errorf("invalid environment: %s", c.Environment)
+    }
+    
+    // Validate log level
+    validLogLevels := []string{"debug", "info", "warn", "error"}
+    if c.LogLevel != "" && !contains(validLogLevels, c.LogLevel) {
+        return fmt.Errorf("invalid log level: %s", c.LogLevel)
+    }
+    
+    return nil
+}
+
+// Helper function for slice contains check
+func contains(slice []string, item string) bool {
+    for _, s := range slice {
+        if s == item {
+            return true
+        }
+    }
+    return false
+}
+```
+
+#### Environment Variable Naming Convention
+Use consistent naming patterns for environment variables:
+- **Prefix**: All variables start with `CIPHER_HUB_`
+- **Format**: `CIPHER_HUB_<COMPONENT>_<SETTING>`
+- **Case**: Use SCREAMING_SNAKE_CASE for environment variables
+- **Examples**: 
+  - `CIPHER_HUB_HOST=localhost`
+  - `CIPHER_HUB_READ_TIMEOUT=30s`
+  - `CIPHER_HUB_CORS_ORIGINS=http://localhost:3000,https://app.example.com`
+
+#### Configuration Usage Pattern
+```go
+// Initialize configuration with environment loading
+func NewServerFromEnv() (*Server, error) {
+    config := ServerConfig{}
+    
+    // Apply secure defaults first
+    config.ApplyDefaults()
+    
+    // Load from environment variables
+    if err := config.LoadFromEnv(); err != nil {
+        return nil, fmt.Errorf("failed to load environment config: %w", err)
+    }
+    
+    // Create server with loaded configuration
+    return NewServer(config)
 }
 ```
 
 ---
 
-## Testing Requirements
+## Testing Standards
 
-### Test Coverage Standards
+### Test Coverage Requirements
 - **Unit Tests**: Every public function and method must have unit tests
 - **Table-Driven Tests**: Use table-driven tests for multiple input scenarios
 - **Error Cases**: Test both success and failure paths
@@ -389,7 +547,7 @@ func TestServerConfig_Validate(t *testing.T) {
 }
 ```
 
-### Test Organization Best Practices
+### Constructor Testing Pattern
 ```go
 // Comprehensive constructor testing
 func TestNewServer(t *testing.T) {
@@ -444,10 +602,46 @@ func TestNewServer(t *testing.T) {
 }
 ```
 
-### Integration Testing
-- **HTTP API Tests**: End-to-end API testing for all endpoints
-- **Storage Tests**: Test storage implementations with real backends
-- **Security Tests**: Verify authentication and authorization enforcement
+### Integration Testing Pattern
+```go
+import (
+    "fmt"
+    "net/http"
+    "testing"
+)
+
+// HTTP API integration testing
+func TestHealthEndpoint(t *testing.T) {
+    // Setup test server
+    config := ServerConfig{
+        Host: "localhost",
+        Port: "0", // Use random port
+    }
+    server, err := NewServer(config)
+    if err != nil {
+        t.Fatalf("Failed to create server: %v", err)
+    }
+
+    // Start server in goroutine
+    go func() {
+        if err := server.Start(); err != nil {
+            t.Errorf("Server failed to start: %v", err)
+        }
+    }()
+    defer server.Shutdown()
+
+    // Test health endpoint
+    resp, err := http.Get(fmt.Sprintf("http://%s/health", server.Address()))
+    if err != nil {
+        t.Fatalf("Health check failed: %v", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        t.Errorf("Expected status 200, got %d", resp.StatusCode)
+    }
+}
+```
 
 ---
 
@@ -487,6 +681,13 @@ func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
 
 ### Health Check Interface Pattern
 ```go
+import (
+    "context"
+    "time"
+    
+    "cipher-hub/internal/storage"
+)
+
 // Extensible health check pattern
 type HealthChecker interface {
     Name() string
@@ -535,6 +736,14 @@ func (s *StorageHealthChecker) Check(ctx context.Context) CheckResult {
 
 ### Request ID Generation Pattern
 ```go
+import (
+    "context"
+    "crypto/rand"
+    "encoding/hex"
+    "fmt"
+    "net/http"
+)
+
 // Secure request ID generation
 func generateRequestID() (string, error) {
     bytes := make([]byte, 8)
@@ -558,6 +767,66 @@ func RequestIDMiddleware(next http.Handler) http.Handler {
         w.Header().Set("X-Request-ID", requestID)
         next.ServeHTTP(w, r.WithContext(ctx))
     })
+}
+```
+
+### JSON Handler Utilities
+```go
+import (
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "time"
+)
+
+// Standard JSON response utilities
+func WriteJSON(w http.ResponseWriter, status int, data any) error {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    
+    if err := json.NewEncoder(w).Encode(data); err != nil {
+        return fmt.Errorf("failed to encode JSON response: %w", err)
+    }
+    return nil
+}
+
+func ReadJSON(r *http.Request, dst any) error {
+    // Limit request body size to prevent abuse
+    r.Body = http.MaxBytesReader(nil, r.Body, 1048576) // 1MB limit
+    
+    decoder := json.NewDecoder(r.Body)
+    decoder.DisallowUnknownFields() // Strict parsing
+    
+    if err := decoder.Decode(dst); err != nil {
+        return fmt.Errorf("failed to decode JSON request: %w", err)
+    }
+    
+    return nil
+}
+
+// Error response helper
+func WriteError(w http.ResponseWriter, status int, message string, requestID string) {
+    response := ErrorResponse{
+        Error:     message,
+        Code:      getErrorCode(status),
+        RequestID: requestID,
+        Timestamp: time.Now(),
+    }
+    
+    WriteJSON(w, status, response)
+}
+
+func getErrorCode(status int) string {
+    switch status {
+    case http.StatusBadRequest:
+        return ErrCodeValidation
+    case http.StatusNotFound:
+        return ErrCodeNotFound
+    case http.StatusUnauthorized:
+        return ErrCodeUnauthorized
+    default:
+        return ErrCodeInternalError
+    }
 }
 ```
 
@@ -619,6 +888,8 @@ package server
 
 ---
 
+---
+
 ## File Organization
 
 ### Naming Conventions
@@ -649,58 +920,9 @@ cipher-hub/
 
 ---
 
-## Development Workflow Standards
+## Security Implementation Checklist
 
-### Session-Based Development Pattern
-- **Step Granularity**: Each development step should be completable in 20-30 minutes
-- **Incremental Progress**: Each step builds upon previous completed work
-- **Validation Requirements**: Each step includes verification and testing requirements
-- **Documentation Updates**: Concurrent documentation updates with implementation
-
-### Pre-Commit Standards
-```bash
-# Required commands before every commit
-go fmt ./...
-go build ./...
-go test ./...
-go vet ./...
-go mod tidy
-
-# Verify no security issues
-go list -json -m all | nancy sleuth
-```
-
-### Commit Message Standards
-```
-type(scope): description
-
-feat(server): implement HTTP server configuration with security validation
-fix(validation): prevent hostname injection attacks in ServerConfig
-docs(api): update API documentation for health check endpoints
-test(security): add comprehensive input validation tests
-```
-
----
-
-## Git Workflow
-
-### Branch Strategy
-- **Feature Branches**: Create feature branches for each roadmap step
-- **Naming**: Use descriptive branch names (e.g., `step/2.1.1.2-http-listener`)
-- **Main Protection**: Main branch requires pull request reviews
-- **No Direct Commits**: Never commit directly to main branch
-
-### Code Review Requirements
-- **Security Changes**: All security-related changes require thorough review
-- **Test Coverage**: New code must include appropriate tests
-- **Documentation**: Public API changes require documentation updates
-- **Performance**: Performance-sensitive changes need benchmarks
-
----
-
-## Security Checklist
-
-### Before Every Commit
+### Code Security Requirements
 - [ ] No key material in logs or error messages
 - [ ] Input validation on all user-provided data with injection prevention
 - [ ] Proper error handling without information leakage
@@ -709,16 +931,24 @@ test(security): add comprehensive input validation tests
 - [ ] Timeout bounds validation to prevent resource exhaustion
 - [ ] Environment variable configuration without hard-coded secrets
 
-### Code Review Focus Areas
-- [ ] Key material protection and secure handling
-- [ ] Input validation and sanitization with security bounds
-- [ ] Error handling and information disclosure prevention
-- [ ] Authentication and authorization implementation
-- [ ] Logging and audit trail completeness without sensitive data
-- [ ] Configuration security and environment-based settings
+### Key Material Protection Standards
+- [ ] Use `json:"-"` tags on all key material fields
+- [ ] Never log key material under any circumstances
+- [ ] Clear sensitive data from memory when no longer needed
+- [ ] Validate all key material operations with proper error handling
+- [ ] Implement secure key generation using `crypto/rand`
+- [ ] Protect against timing attacks in key comparison operations
+
+### Input Validation Requirements
+- [ ] Validate all configuration parameters with security bounds
+- [ ] Prevent path injection attacks in hostname validation
+- [ ] Prevent script injection attacks in all user inputs
+- [ ] Implement proper bounds checking for numeric inputs
+- [ ] Use structured validation with consistent error messages
+- [ ] Apply timeout limits to prevent resource exhaustion
 
 ---
 
-*Style Guide Version: 1.3*  
+*Implementation Style Guide Version: 1.4*  
 *Last Updated: Current Session*  
-*Status: Updated with Phase 2.1 HTTP Server Infrastructure Patterns*
+*Focus: Security-first implementation patterns with comprehensive validation and testing standards*
