@@ -1,12 +1,25 @@
-# Review Artifacts
+# Artifact Review
 
-Please analyze all of the following core artifacts:
+**Purpose**: Eliminate redundancy and optimize core project documentation.
 
+## Instructions
+
+Analyze the core project documents:
 - `readme.md`
-- `roadmap.md`
+- `roadmap.md` 
 - `spec.md`
 - `style-guide.md`
 
-and determine any areas where there is overlapping information between them. Determine the document that is best suited for the redundant information based on the intent of the core document, and adjust the artifacts to only include the information in a single place.
+**Phase 1: Overlap Analysis**
+- Identify redundant information between documents
+- Determine the optimal document for shared information based on document purpose
+- Note inconsistencies or conflicting information
 
-Once complete, please perform a final review of each artifact for any errors or inconsistencies, optimize the layout of information, and update the artifact to its final state.
+**Phase 2: Document Optimization**
+Update each document as separate artifacts to:
+- Remove redundant content (information should exist in only one place)
+- Ensure each document serves its specific purpose effectively
+- Verify consistency across all documentation
+- Optimize information layout and organization
+
+**Output**: Optimized versions of all four core documents as separate artifacts

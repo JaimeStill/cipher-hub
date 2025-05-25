@@ -1,7 +1,22 @@
-# Pre Session
+# Pre-Session Workflow
 
-Perform the following steps to 
+**Purpose**: Generate a validated step guide for the next development increment.
 
-1. [Prepare](../.prompts/guide-prepare.md) for the next step.
-2. [Generate](../.prompts/guide-generate.md) a **Step Guide**.
-3. [Validate](../.prompts/guide-validate.md) the **Step Guide**.
+## Prompt Sequence
+
+### 1. Step Preparation
+Execute: [**Step Guide Preparation**](.prompts/guide-prepare.md)
+- Analyze current progress and identify decisions needed for the next step
+- Review `checkpoint.md` and `review.md` for blockers or prerequisites
+
+### 2. Step Guide Generation  
+Execute: [**Step Guide Generation**](.prompts/guide-generate.md)
+- Generate comprehensive `step-guide.md` for the **IMMEDIATE NEXT** step from `roadmap.md`
+- Include implementation details, code examples, and completion criteria
+
+### 3. Step Guide Validation
+Execute: [**Step Guide Validation**](.prompts/guide-validate.md)
+- Review step guide for errors, security issues, and pattern compliance
+- Refine guide based on validation findings
+
+**Output**: Production-ready `step-guide.md` for session execution

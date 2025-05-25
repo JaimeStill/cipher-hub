@@ -1,3 +1,7 @@
+# Streamlined Prompt Documents
+
+## .prompts/checkpoint-generate.md
+
 # Checkpoint Generation
 
 **Purpose**: Capture current development state and unimplemented ideas for next session context.

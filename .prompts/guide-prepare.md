@@ -1,3 +1,18 @@
 # Step Guide Preparation
 
-I am ready to prepare for the next **Step** in development, tagged as IMMEDIATE NEXT in `roadmap.md`. Identify any decisions that need to be made, technical or administrative, before a **Step Guide** can be generated. Refer to `checkpoint.md` and `review.md` for any lingering recommendations, enhancements, issues, decisions that need to be made, or any other aspect of the project that requires attention.
+**Purpose**: Identify decisions and prerequisites needed before generating a step guide.
+
+## Instructions
+
+Analyze the next **IMMEDIATE NEXT** step from `roadmap.md` and identify:
+
+- **Technical Decisions**: Architecture choices, implementation approaches, or design patterns that need resolution
+- **Administrative Decisions**: Process, workflow, or documentation decisions required
+- **Prerequisites**: Dependencies, setup requirements, or blockers that must be addressed
+- **Risk Assessment**: Potential issues or challenges for the upcoming step
+
+Review `checkpoint.md` and `review.md` for any lingering recommendations, issues, or decisions that could impact the next step.
+
+Provide recommendations for resolving identified decisions before step guide generation.
+
+**Output**: Analysis of preparation requirements and decision recommendations

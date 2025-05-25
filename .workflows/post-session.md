@@ -1,8 +1,21 @@
-# Review
+# Post-Session Workflow
 
-After completing a session and before moving on to the next:
+**Purpose**: Conduct quality review and synchronize all project documentation.
 
-1. Conduct a [Code Review](../.prompts/review-code.md).
-2. Conduct an [Artifact Review](../.prompts/review-artifacts.md).
+## Review Sequence
 
-Any findings in the code review will be addressed in the [Pre-Session](pre-session.md) phase.
+### 1. Code Review
+Execute: [**Code Review**](.prompts/review-code.md)
+- Comprehensive analysis of implementation quality and security
+- Generate updated `review.md` with findings and recommendations
+
+### 2. Documentation Synchronization
+Execute: [**Artifact Review**](.prompts/review-artifacts.md)
+- Analyze core documents for overlap and optimize content organization
+- Update all core documents to reflect current project state:
+  - `readme.md` - Project status and overview
+  - `roadmap.md` - Development progress and next steps
+  - `spec.md` - Technical architecture alignment
+  - `style-guide.md` - Updated patterns and standards
+
+**Output**: Synchronized documentation suite reflecting current implementation state
