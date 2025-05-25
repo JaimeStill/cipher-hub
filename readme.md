@@ -92,10 +92,11 @@ The project documentation is organized into focused documents, each serving a sp
 
 | Document | Primary Purpose | Content Focus | Version |
 |----------|-----------------|---------------|---------|
-| [`spec.md`](./spec.md) | Technical Architecture | High-level design, capabilities, decisions | 1.5 |
-| [`roadmap.md`](./roadmap.md) | Development Planning | Phases, milestones, granular steps | Current |
-| [`style-guide.md`](./style-guide.md) | Implementation Reference | All code examples & standards | **1.3** |
+| [`checkpoint.md`](./checkpoint.md) | Development Continuity | Current step state, immediate next tasks | Current |
 | [`review.md`](./review.md) | Quality Verification | Checklists, security verification | 1.2 |
+| [`roadmap.md`](./roadmap.md) | Development Planning | Phases, milestones, granular steps | Current |
+| [`spec.md`](./spec.md) | Technical Architecture | High-level design, capabilities, decisions | 1.5 |
+| [`style-guide.md`](./style-guide.md) | Implementation Reference | All code examples & standards | **1.3** |
 
 **💡 Development Tip**: The [`style-guide.md`](./style-guide.md) serves as the authoritative source for all implementation details, code examples, and established patterns from HTTP server development.
 
@@ -111,12 +112,13 @@ cipher-hub/
 │   │   ├── server.go        # ServerConfig + Server struct (Step 2.1.1.1 ✅)
 │   │   └── server_test.go   # Comprehensive security-focused tests (✅)
 │   └── handlers/            # HTTP request handlers (Phase 2.1 📋)
-├── docs/                    # Additional documentation
-├── spec.md                  # Technical specification (v1.5)
-├── roadmap.md              # Development roadmap with granular steps
-├── style-guide.md          # Implementation standards (primary reference v1.3)
+├── checkpoint.md           # Development progress and next steps
+├── go.mod                  # Go module definition
+├── readme.md               # Project homepage and documentation
 ├── review.md               # Quality assurance checklist
-└── README.md               # This file
+├── roadmap.md              # Development roadmap with granular steps
+├── spec.md                 # Technical specification (v1.5)
+└── style-guide.md          # Implementation standards (primary reference v1.3)
 ```
 
 ## Implemented Features
@@ -193,7 +195,7 @@ cipher-hub/
 ### Progress Tracking
 - **Session-Based Development**: 20-30 minute incremental development steps
 - **Milestone Validation**: Clear completion criteria for each development step
-- **Checkpoint Documentation**: Regular progress captures for development continuity
+- **Checkpoint Documentation**: Current step state and immediate next tasks
 - **Architecture Decision Records**: Technical decisions documented with rationale
 
 ## Related Projects
