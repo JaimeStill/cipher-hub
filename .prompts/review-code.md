@@ -104,7 +104,7 @@ Use this checklist to ensure code quality and security before committing changes
 
 ### Code Documentation
 - [ ] Public functions have Go doc comments
-- [ ] Package-level documentation updated if new package
+- [ ] Package-level documentation updated in a `docs.go` file at the package root
 - [ ] Complex algorithms explained with comments
 - [ ] Security considerations documented for sensitive functions
 - [ ] TODO comments include issue references or completion criteria

@@ -1,11 +1,5 @@
 # Start Session
 
-Begin working through the execution guide, asking questions and refining decisions.
+Begin working through `step-guide.md`, asking questions and refining decisions.
 
-Once complete:
-
-1. [`mod-roadmap`](../.prompts/mod-roadmap.md)
-2. [`mod-spec`](../.prompts/mod-spec.md)
-3. [`mod-style-guide`](../.prompts/mod-style-guide.md)
-4. [`mod-checkpoint`](../.prompts/mod-checkpoint.md)
-5. [`mod-readme`](../.prompts/mod-readme.md)
+Once complete, execute [`checkpoint-generate`](../.prompts/checkpoint-generate.md) to capture any ideas or details that have not yet been implemented so that they can serve as context to the next chat session.
