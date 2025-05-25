@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ const (
 
 	// Error message prefix for consistent error handling
 	ServerConfigErrorPrefix = "ServerConfig"
+	ServerErrorPrefix       = "Server"
 )
 
 // ServerConfig holds all configuration parameters for the HTTP server.
@@ -166,6 +168,9 @@ type Server struct {
 	// Configuration
 	config ServerConfig
 
+	// HTTP server instance for lifecycle management
+	httpServer *http.Server
+
 	// Lifecycle management
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
@@ -174,18 +179,19 @@ type Server struct {
 	started bool
 }
 
-// NewServer creates a new HTTP server instance with the specificed configuration.
+// NewServer creates a new HTTP server instance with the specified configuration.
 // It validates the configuration, applies secure defaults, and prepares the server
-// for lifecycle management.
+// for lifecycle management with proper shutdown coordination.
 //
 // Parameters:
 //   - config: ServerConfig containing host, port, and timeout configuration
 //
 // Returns:
-//   - *Server: Configured server instance
+//   - *Server: Configured server instance ready for Start()
 //   - error: Validation error if configuration is invalid
 //
 // Security: Applies secure timeout defaults and validates all configuration parameters.
+// The server is prepared but not started; call Start() to begin accepting connections.
 func NewServer(config ServerConfig) (*Server, error) {
 	// Apply defaults for any zero-value timeout fields
 	config.ApplyDefaults()
@@ -201,6 +207,9 @@ func NewServer(config ServerConfig) (*Server, error) {
 	// Create server with validated configuration
 	server := &Server{
 		config: config,
+
+		// HTTP server instance (will be initialized in Start())
+		httpServer: nil,
 
 		// Lifecycle management
 		shutdownCtx:    shutdownCtx,

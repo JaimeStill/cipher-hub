@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -367,6 +368,11 @@ func TestNewServer(t *testing.T) {
 				return
 			}
 
+			// Verify httpServer field initialization
+			if server.httpServer != nil {
+				t.Error("httpServer should be nil before Start()")
+			}
+
 			// Verify configuration is properly stored and defaults applied
 			config := server.Config()
 			if config.Host != tt.config.Host {
@@ -476,6 +482,11 @@ func TestServer_ShutdownContext(t *testing.T) {
 		// Expected - context should be canceled
 	default:
 		t.Error("ShutdownContext() should be canceled after Shutdown()")
+	}
+
+	// Verify the context is a cancellation context, not timeout
+	if ctx.Err() != context.Canceled {
+		t.Errorf("Expected context.Canceled, got %v", ctx.Err())
 	}
 }
 
