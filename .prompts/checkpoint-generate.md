@@ -14,4 +14,4 @@ Analyze this chat session's progress and generate an updated `checkpoint.md` art
 
 Consolidate any details from the existing `checkpoint.md` that remain relevant but haven't been implemented or captured elsewhere.
 
-**Output**: Updated `checkpoint.md` artifact
+**Output**: Updated `checkpoint.md` artifact. Artifact only. No preamble or summary.

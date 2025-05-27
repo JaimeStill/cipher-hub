@@ -57,4 +57,4 @@ Provide specific recommendations for addressing identified issues and maintainin
 - [ ] String concatenation optimized
 - [ ] Memory usage appropriate
 
-**Output**: Updated `review.md` artifact with comprehensive findings and recommendations
+**Output**: Updated `review.md` artifact with comprehensive findings and recommendations. Artifact only. No preamble or summary.

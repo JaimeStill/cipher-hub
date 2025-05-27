@@ -15,4 +15,4 @@ Generate a detailed `step-guide.md` artifact for the **IMMEDIATE NEXT** step tag
 
 Base the guide on current project context, established patterns, and requirements from the overall project specification.
 
-**Output**: Complete `step-guide.md` artifact ready for session execution
+**Output**: Complete `step-guide.md` artifact ready for session execution. Artifact only. No preamble or summary.

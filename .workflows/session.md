@@ -16,4 +16,4 @@ Execute: [**Checkpoint Generation**](.prompts/checkpoint-generate.md)
 - Capture completed work, architectural decisions, and context
 - Document unimplemented ideas and next step preparation needs
 
-**Output**: Updated `checkpoint.md` with current development state
+**Output**: Updated `checkpoint.md` with current development state.

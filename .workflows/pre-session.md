@@ -19,4 +19,4 @@ Execute: [**Step Guide Validation**](.prompts/guide-validate.md)
 - Review step guide for errors, security issues, and pattern compliance
 - Refine guide based on validation findings
 
-**Output**: Production-ready `step-guide.md` for session execution
+**Output**: Production-ready `step-guide.md` for session execution.
