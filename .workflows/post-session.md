@@ -11,7 +11,6 @@ Execute: [**Code Review**](.prompts/review-code.md)
 
 ### 2. Documentation Synchronization
 Execute: [**Artifact Review**](.prompts/review-artifacts.md)
-- Analyze core documents for overlap and optimize content organization
 - Update all core documents to reflect current project state:
   - `readme.md` - Project status and overview
   - `roadmap.md` - Development progress and next steps
