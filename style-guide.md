@@ -1,6 +1,6 @@
 # Cipher Hub - Implementation Style Guide
 
-**Version**: 1.4  
+**Version**: 1.5  
 **Last Updated**: Current Session
 
 This style guide establishes consistent development practices for the Cipher Hub project. All code contributions must adhere to these standards to maintain security, quality, and maintainability.
@@ -142,6 +142,206 @@ defer shutdownCancel()
 
 ---
 
+## Thread Safety Patterns
+
+### Production-Ready Concurrent Access
+```go
+import (
+    "sync"
+)
+
+// Server struct with thread safety
+type Server struct {
+    // Configuration (immutable after creation)
+    config ServerConfig
+
+    // HTTP server instance for lifecycle management
+    httpServer *http.Server
+
+    // Lifecycle management
+    shutdownCtx    context.Context
+    shutdownCancel context.CancelFunc
+
+    // Server state (protected by mutex)
+    started bool
+    mu      sync.RWMutex // Protects mutable state
+}
+
+// Thread-safe state access patterns
+func (s *Server) IsStarted() bool {
+    s.mu.RLock()
+    defer s.mu.RUnlock()
+    return s.started
+}
+
+// Thread-safe state modification patterns
+func (s *Server) Start() error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    // Check state before modification
+    if s.started {
+        return fmt.Errorf("%s: server already started", ServerErrorPrefix)
+    }
+
+    // Perform operations...
+    
+    // Update state atomically with operation completion
+    s.started = true
+    return nil
+}
+```
+
+### Goroutine Management Patterns
+```go
+// Channel-based coordination for goroutine startup
+func (s *Server) Start() error {
+    // ... state checks and setup ...
+
+    // Channel for server readiness signaling
+    ready := make(chan struct{})
+
+    // Start server in goroutine with proper coordination
+    go func() {
+        defer func() {
+            // Always update state on goroutine exit
+            s.mu.Lock()
+            s.started = false
+            s.mu.Unlock()
+            listener.Close()
+        }()
+
+        // Signal readiness before serving
+        close(ready)
+
+        // Serve with proper error handling
+        if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+            log.Printf("HTTP server error: %v", err)
+        }
+    }()
+
+    // Update state before waiting for readiness
+    s.started = true
+
+    // Wait for server to be ready (avoids race conditions)
+    <-ready
+
+    return nil
+}
+```
+
+### Mutex Selection Guidelines
+```go
+// Use sync.RWMutex for read-heavy, write-occasional scenarios
+type Server struct {
+    // ... other fields ...
+    mu sync.RWMutex // Many reads (IsStarted), few writes (Start/Stop)
+}
+
+// Use sync.Mutex for write-heavy or simple locking scenarios
+type Counter struct {
+    value int
+    mu    sync.Mutex // Simple increment/decrement operations
+}
+```
+
+---
+
+## HTTP Server Lifecycle Patterns
+
+### Complete Server Lifecycle Implementation
+```go
+// HTTP Server lifecycle with proper resource management
+func (s *Server) Start() error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    // Idempotent behavior - prevent double start
+    if s.started {
+        return fmt.Errorf("%s: server already started", ServerErrorPrefix)
+    }
+
+    // Create HTTP server with validated configuration
+    s.httpServer = &http.Server{
+        Addr:         s.config.Address(),
+        ReadTimeout:  s.config.ReadTimeout,
+        WriteTimeout: s.config.WriteTimeout,
+        IdleTimeout:  s.config.IdleTimeout,
+    }
+
+    // Store address for error handling before potential cleanup
+    addr := s.httpServer.Addr
+
+    // Create listener with error handling
+    listener, err := net.Listen("tcp", addr)
+    if err != nil {
+        s.httpServer = nil // Clean up on failure
+        return fmt.Errorf("%s: failed to create listener on %s: %w", 
+            ServerErrorPrefix, addr, err)
+    }
+
+    // Channel-based readiness coordination
+    ready := make(chan struct{})
+
+    // Start server in goroutine with proper lifecycle management
+    go func() {
+        defer func() {
+            s.mu.Lock()
+            s.started = false
+            s.mu.Unlock()
+            listener.Close()
+        }()
+
+        // Signal readiness before serving
+        close(ready)
+
+        // Serve with proper error handling
+        if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+            log.Printf("HTTP server error: %v", err)
+        }
+    }()
+
+    // Update state atomically
+    s.started = true
+
+    // Wait for server readiness
+    <-ready
+
+    return nil
+}
+```
+
+### Resource Cleanup Patterns
+```go
+// Always clean up resources on failure
+func (s *Server) Start() error {
+    // ... setup code ...
+    
+    listener, err := net.Listen("tcp", addr)
+    if err != nil {
+        s.httpServer = nil // Clean up server instance
+        return fmt.Errorf("%s: failed to create listener on %s: %w", 
+            ServerErrorPrefix, addr, err)
+    }
+    
+    // ... continue with success path ...
+}
+
+// Use defer for automatic cleanup in goroutines
+go func() {
+    defer func() {
+        s.mu.Lock()
+        s.started = false
+        s.mu.Unlock()
+        listener.Close() // Always close listener
+    }()
+    
+    // ... server logic ...
+}()
+```
+
+---
+
 ## Security-First Development
 
 ### Input Validation Standards
@@ -186,7 +386,7 @@ func isValidHostname(hostname string) bool {
 }
 ```
 
-#### Port Validation with Security Bounds
+#### Enhanced Port Validation with Dynamic Assignment Support
 ```go
 func (c *ServerConfig) validatePort() error {
     if c.Port == "" {
@@ -198,11 +398,21 @@ func (c *ServerConfig) validatePort() error {
         return fmt.Errorf("invalid port format: %w", err)
     }
 
-    if portNum < 1 || portNum > 65535 {
-        return fmt.Errorf("port must be between 1 and 65535, got %d", portNum)
+    // Support port "0" for OS dynamic assignment
+    if portNum < 0 || portNum > 65535 {
+        return fmt.Errorf("port must be between 0 and 65535, got %d", portNum)
     }
 
     return nil
+}
+
+// Document port semantics clearly
+// PortNum returns the configured port as an integer.
+// Port 0 indicates dynamic port assignment by the OS.
+// This method assumes the port has been validated through Validate().
+func (c *ServerConfig) PortNum() int {
+    portNum, _ := strconv.Atoi(c.Port) // Safe after validation
+    return portNum
 }
 ```
 
@@ -280,6 +490,16 @@ func (c *ServerConfig) Validate() error {
     }
     return nil
 }
+```
+
+#### Secure Error Information Handling
+```go
+// Correct: Safe error messages with necessary context
+return fmt.Errorf("%s: failed to create listener on %s: %w", 
+    ServerErrorPrefix, s.httpServer.Addr, err)
+
+// Incorrect: Could leak sensitive configuration
+return fmt.Errorf("failed to bind with config %+v: %w", s.config, err)
 ```
 
 #### Structured Error Responses
@@ -477,6 +697,7 @@ func NewServerFromEnv() (*Server, error) {
 - **Error Cases**: Test both success and failure paths
 - **Edge Cases**: Include boundary conditions and edge cases
 - **Security Tests**: Test malicious input and injection attempts
+- **Thread Safety Tests**: Test concurrent access patterns where applicable
 
 ### Security-Focused Testing Patterns
 ```go
@@ -515,6 +736,14 @@ func TestServerConfig_Validate(t *testing.T) {
             errMsg:  "ServerConfig: invalid host format",
         },
         {
+            name: "port zero for dynamic assignment",
+            config: ServerConfig{
+                Host: "localhost",
+                Port: "0", // Should be valid for OS dynamic assignment
+            },
+            wantErr: false,
+        },
+        {
             name: "timeout below minimum",
             config: ServerConfig{
                 Host: "localhost",
@@ -543,6 +772,144 @@ func TestServerConfig_Validate(t *testing.T) {
                 }
             }
         })
+    }
+}
+```
+
+### HTTP Server Lifecycle Testing Patterns
+```go
+func TestServer_Start(t *testing.T) {
+    tests := []struct {
+        name       string
+        config     ServerConfig
+        wantErr    bool
+        errMessage string
+    }{
+        {
+            name: "successful start with default config",
+            config: ServerConfig{
+                Host: "localhost",
+                Port: "0", // Use random port for testing
+            },
+            wantErr: false,
+        },
+        {
+            name: "successful start with custom timeouts",
+            config: ServerConfig{
+                Host:         "127.0.0.1",
+                Port:         "0",
+                ReadTimeout:  20 * time.Second,
+                WriteTimeout: 25 * time.Second,
+                IdleTimeout:  90 * time.Second,
+            },
+            wantErr: false,
+        },
+        {
+            name: "start with invalid IP address",
+            config: ServerConfig{
+                Host: "999.999.999.999", // Invalid IP that fails binding
+                Port: "8080",
+            },
+            wantErr:    true,
+            errMessage: "failed to create listener",
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            server, err := NewServer(tt.config)
+            if err != nil {
+                t.Fatalf("NewServer() unexpected error: %v", err)
+            }
+
+            // Verify initial state
+            if server.IsStarted() {
+                t.Error("Server should not be started initially")
+            }
+            if server.httpServer != nil {
+                t.Error("httpServer should be nil before Start()")
+            }
+
+            // Start the server
+            err = server.Start()
+
+            if tt.wantErr {
+                if err == nil {
+                    t.Error("Start() expected error, got nil")
+                }
+                if tt.errMessage != "" && !strings.Contains(err.Error(), tt.errMessage) {
+                    t.Errorf("Start() error = %v, want error containing %v", err, tt.errMessage)
+                }
+                return
+            }
+
+            if err != nil {
+                t.Errorf("Start() unexpected error: %v", err)
+                return
+            }
+
+            // Verify server state after successful start
+            if !server.IsStarted() {
+                t.Error("Server should be started after Start()")
+            }
+            if server.httpServer == nil {
+                t.Error("httpServer should not be nil after Start()")
+            }
+
+            // Verify HTTP server configuration
+            if server.httpServer.Addr != server.Address() {
+                t.Errorf("httpServer.Addr = %v, want %v", server.httpServer.Addr, server.Address())
+            }
+            
+            // Test timeout configuration
+            if server.httpServer.ReadTimeout != server.ReadTimeout() {
+                t.Errorf("httpServer.ReadTimeout = %v, want %v", server.httpServer.ReadTimeout, server.ReadTimeout())
+            }
+
+            // Cleanup
+            server.Shutdown()
+            time.Sleep(50 * time.Millisecond)
+        })
+    }
+}
+```
+
+### Thread Safety Testing Patterns
+```go
+func TestServer_Start_AlreadyStarted(t *testing.T) {
+    config := ServerConfig{
+        Host: "localhost",
+        Port: "0",
+    }
+
+    server, err := NewServer(config)
+    if err != nil {
+        t.Fatalf("NewServer() unexpected error: %v", err)
+    }
+
+    // Start the server
+    err = server.Start()
+    if err != nil {
+        t.Fatalf("First Start() unexpected error: %v", err)
+    }
+    defer func() {
+        server.Shutdown()
+        time.Sleep(50 * time.Millisecond)
+    }()
+
+    // Try to start again - should fail with idempotent behavior
+    err = server.Start()
+    if err == nil {
+        t.Error("Second Start() should return error")
+    }
+
+    if !strings.Contains(err.Error(), "server already started") {
+        t.Errorf("Start() error = %v, want error containing 'server already started'", err)
+    }
+
+    // Verify server is still running after failed second start
+    if !server.IsStarted() {
+        t.Error("Server should still be running after failed second start")
     }
 }
 ```
@@ -843,17 +1210,17 @@ func getErrorCode(status int) string {
 ```go
 // NewServer creates a new HTTP server instance with the specified configuration.
 // It validates the configuration, applies secure defaults, and prepares the server
-// for lifecycle management.
+// for lifecycle management with proper shutdown coordination.
 //
 // Parameters:
 //   - config: ServerConfig containing host, port, and timeout configuration
 //
 // Returns:
-//   - *Server: Configured server instance
+//   - *Server: Configured server instance ready for Start()
 //   - error: Validation error if configuration is invalid
 //
-// Security: Applies secure timeout defaults and validates all configuration parameters
-// to prevent injection attacks and resource exhaustion.
+// Security: Applies secure timeout defaults and validates all configuration parameters.
+// The server is prepared but not started; call Start() to begin accepting connections.
 func NewServer(config ServerConfig) (*Server, error) {
     // ... implementation
 }
@@ -901,14 +1268,21 @@ package server
 ### Directory Structure
 ```
 cipher-hub/
-├── cmd/cipher-hub/           # Application entry points
+├── cmd/cipher-hub/           # Application entry point
 ├── internal/
-│   ├── models/              # Core data models
-│   ├── storage/             # Storage interface and implementations
-│   ├── server/              # HTTP server infrastructure
-│   └── handlers/            # HTTP request handlers
-├── pkg/                     # Public libraries (if any)
-└── docs/                    # Documentation
+│   ├── models/              # Core data models (Phase 1 ✅)
+│   ├── storage/             # Storage interface (Phase 1 ✅)  
+│   ├── server/              # HTTP server infrastructure (Phase 2.1 🔄)
+│   │   ├── server.go        # Complete HTTP server with lifecycle management (✅)
+│   │   └── server_test.go   # Comprehensive security and lifecycle testing (✅)
+│   └── handlers/            # HTTP request handlers (Phase 2.1 📋)
+├── checkpoint.md           # Development progress and next steps
+├── go.mod                  # Go module definition
+├── readme.md               # Project homepage and documentation
+├── review.md               # Latest code review findings and quality status
+├── roadmap.md              # Development roadmap with granular steps
+├── spec.md                 # Technical specification
+└── style-guide.md          # Implementation standards (primary reference)
 ```
 
 ### File Content Organization
@@ -930,6 +1304,7 @@ cipher-hub/
 - [ ] Audit logging for security-relevant operations
 - [ ] Timeout bounds validation to prevent resource exhaustion
 - [ ] Environment variable configuration without hard-coded secrets
+- [ ] Thread-safe operations preventing race conditions
 
 ### Key Material Protection Standards
 - [ ] Use `json:"-"` tags on all key material fields
@@ -946,9 +1321,18 @@ cipher-hub/
 - [ ] Implement proper bounds checking for numeric inputs
 - [ ] Use structured validation with consistent error messages
 - [ ] Apply timeout limits to prevent resource exhaustion
+- [ ] Support port "0" for OS dynamic assignment while maintaining security
+
+### HTTP Server Security Requirements
+- [ ] Thread-safe concurrent access patterns implemented
+- [ ] Proper resource cleanup on all failure scenarios
+- [ ] Idempotent operations preventing double-start issues
+- [ ] Channel-based coordination avoiding race conditions
+- [ ] Secure error handling without configuration leakage
+- [ ] Proper HTTP server lifecycle management with cleanup
 
 ---
 
-*Implementation Style Guide Version: 1.4*  
+*Implementation Style Guide Version: 1.5*  
 *Last Updated: Current Session*  
-*Focus: Security-first implementation patterns with comprehensive validation and testing standards*
+*Focus: Security-first implementation patterns with thread safety and HTTP server lifecycle management*
