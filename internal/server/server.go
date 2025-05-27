@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -112,8 +114,8 @@ func (c *ServerConfig) validatePort() error {
 		return fmt.Errorf("invalid port format: %w", err)
 	}
 
-	if portNum < 1 || portNum > 65535 {
-		return fmt.Errorf("port must be between 1 and 65535, got %d", portNum)
+	if portNum < 0 || portNum > 65535 {
+		return fmt.Errorf("port must be between 0 and 65535, got %d", portNum)
 	}
 
 	return nil
@@ -157,7 +159,8 @@ func (c *ServerConfig) Address() string {
 }
 
 // PortNum returns the configured port as an integer.
-// This method assumes the port has been validated through Validate().
+// Port 0 indicates dynamic port assignment by the OS.
+// This method assumes the port has been validated through Validate(),
 func (c *ServerConfig) PortNum() int {
 	portNum, _ := strconv.Atoi(c.Port) // Safe after validation
 	return portNum
@@ -177,6 +180,7 @@ type Server struct {
 
 	// Server state
 	started bool
+	mu      sync.RWMutex
 }
 
 // NewServer creates a new HTTP server instance with the specified configuration.
@@ -215,9 +219,84 @@ func NewServer(config ServerConfig) (*Server, error) {
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
 		started:        false,
+		mu:             sync.RWMutex{},
 	}
 
 	return server, nil
+}
+
+// Start begins accepting HTTP requests on the configured address.
+// It creates an http.Server instance with validated timeouts and starts
+// the listener with proper error handling and lifecycle integration.
+//
+// The method is thread-safe and idepmotent - calling Start() on an already
+// started server returns an error without side effects.
+//
+// Returns:
+//   - error: Listener setup error, port binding error, or server already started
+//
+// Security: Uses validated configuration to prevent resource exhaustion
+// and integrates with shutdown context for graceful termination.
+func (s *Server) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if server is already started
+	if s.started {
+		return fmt.Errorf("%s: server already started", ServerErrorPrefix)
+	}
+
+	// Create HTTP server instance with validated configuration
+	s.httpServer = &http.Server{
+		Addr:         s.config.Address(),
+		ReadTimeout:  s.config.ReadTimeout,
+		WriteTimeout: s.config.WriteTimeout,
+		IdleTimeout:  s.config.IdleTimeout,
+	}
+
+	// Store address for error handling (before potential cleanup)
+	addr := s.httpServer.Addr
+
+	// Create listener with error handling
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		s.httpServer = nil
+		return fmt.Errorf(
+			"%s: failed to create listener on %s: %w",
+			ServerErrorPrefix,
+			addr,
+			err,
+		)
+	}
+
+	// Channel for server readiness signaling
+	ready := make(chan struct{})
+
+	// Start server in goroutine with proper coordination
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.started = false
+			s.mu.Unlock()
+			listener.Close()
+		}()
+
+		// Signal readiness before serving
+		close(ready)
+
+		// serve with proper error handling
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	// Update state before waiting for readiness
+	s.started = true
+
+	// Wait for server to be ready
+	<-ready
+
+	return nil
 }
 
 // Config returns a copy of the server configuration
@@ -240,7 +319,9 @@ func (s *Server) Port() string {
 	return s.config.Port
 }
 
-// PortNum returns the configured port as an integer
+// PortNum returns the configured port as an integer.
+// Port 0 indicates dynamic port assignment by the OS.
+// This method assumes the port has been validated through Validate(),
 func (s *Server) PortNum() int {
 	return s.config.PortNum()
 }
@@ -270,8 +351,12 @@ func (s *Server) ShutdownContext() context.Context {
 	return s.shutdownCtx
 }
 
-// IsStarted returns whether the server has been started (for future use)
+// IsStarted returns whether the server is currently accepting connections.
+// This method is safe for concurrent access and reflects the actual
+// operational state of the HTTP server.
 func (s *Server) IsStarted() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.started
 }
 

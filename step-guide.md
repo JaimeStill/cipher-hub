@@ -284,37 +284,38 @@ Add comprehensive tests for the `Start()` method:
 ```go
 func TestServer_Start(t *testing.T) {
 	tests := []struct {
-		name       string
-		config     ServerConfig
-		wantErr    bool
-		errMessage string
+    name       string
+    config     ServerConfig
+    wantErr    bool
+    errMessage string
 	}{
 		{
 			name: "successful start with default config",
 			config: ServerConfig{
-				Host: "localhost",
-				Port: "0", // Use random port for testing
+					Host: "localhost",
+					Port: "0", // Use random port for testing
 			},
 			wantErr: false,
 		},
 		{
 			name: "successful start with custom timeouts",
 			config: ServerConfig{
-				Host:         "127.0.0.1",
-				Port:         "0", // Use random port for testing
-				ReadTimeout:  20 * time.Second,
-				WriteTimeout: 25 * time.Second,
-				IdleTimeout:  90 * time.Second,
+					Host:         "127.0.0.1",
+					Port:         "0", // Use random port for testing
+					ReadTimeout:  20 * time.Second,
+					WriteTimeout: 25 * time.Second,
+					IdleTimeout:  90 * time.Second,
 			},
 			wantErr: false,
 		},
 		{
-			name: "start on localhost",
+			name: "start with invalid port",
 			config: ServerConfig{
-				Host: "localhost",
-				Port: "0", // Use random port for testing
+					Host: "localhost",
+					Port: "99999", // Invalid port number > 65535
 			},
-			wantErr: false,
+			wantErr: true,
+			errMessage: "failed to create listener",
 		},
 	}
 
