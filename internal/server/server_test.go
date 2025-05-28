@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -930,6 +932,249 @@ func TestServer_CompleteLifecycle(t *testing.T) {
 	// Verify the error message
 	if err != nil && !strings.Contains(err.Error(), "cannot start server after shutdown") {
 		t.Errorf("Expected 'cannot start server after shutdown' error, got: %v", err)
+	}
+}
+
+func TestServer_MiddlewareIntegration(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Verify middleware stack is initialized
+	if server.Middleware() == nil {
+		t.Error("Server middleware stack should be initialized")
+	}
+
+	// Test middleware configuration
+	testMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Test-Middleware", "applied")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	server.Middleware().Use(testMiddleware)
+
+	// Verify middleware was added
+	if server.Middleware().Count() != 1 {
+		t.Errorf("Expected 1 middleware, got %d", server.Middleware().Count())
+	}
+}
+
+func TestServer_SetHandler(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Test setting handler
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	})
+
+	server.SetHandler(testHandler)
+
+	// Verify handler was set by testing its behavior
+	req := httptest.NewRequest("GET", "/", nil)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+
+	expectedBody := "test response"
+	if recorder.Body.String() != expectedBody {
+		t.Errorf("Expected body %q, got %q", expectedBody, recorder.Body.String())
+	}
+}
+
+func TestServer_MiddlewareApplication(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add test middleware
+	server.Middleware().Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Test-Middleware", "applied")
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	// Set test handler
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test that middleware is applied
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	// Get the final handler from the HTTP server
+	if server.httpServer == nil || server.httpServer.Handler == nil {
+		t.Fatal("HTTP server or handler not initialized")
+	}
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify middleware was applied
+	if w.Header().Get("X-Test-Middleware") != "applied" {
+		t.Error("Middleware was not applied during server operation")
+	}
+
+	// Verify handler was called
+	if w.Body.String() != "test response" {
+		t.Errorf("Expected 'test response', got %q", w.Body.String())
+	}
+}
+
+func TestServer_NilHandlerDefault(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Don't set a handler - should get 404 default
+	// Add middleware to verify it still works
+	server.Middleware().Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Middleware", "applied")
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test default 404 behavior
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify middleware was still applied
+	if w.Header().Get("X-Middleware") != "applied" {
+		t.Error("Middleware should be applied even with nil handler")
+	}
+
+	// Verify 404 response
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 status, got %d", w.Code)
+	}
+}
+
+func TestServer_MiddlewareChaining(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add multiple middleware using chaining
+	server.Middleware().
+		Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-1", "applied")
+				next.ServeHTTP(w, r)
+			})
+		}).
+		UseIf(true, func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-2", "applied")
+				next.ServeHTTP(w, r)
+			})
+		}).
+		UseIf(false, func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-3", "should-not-apply")
+				next.ServeHTTP(w, r)
+			})
+		})
+
+	// Verify correct middleware count
+	if server.Middleware().Count() != 2 {
+		t.Errorf("Expected 2 middleware, got %d", server.Middleware().Count())
+	}
+
+	// Set handler and start server
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test middleware application
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify applied middleware
+	if w.Header().Get("X-Middleware-1") != "applied" {
+		t.Error("Middleware 1 should be applied")
+	}
+	if w.Header().Get("X-Middleware-2") != "applied" {
+		t.Error("Middleware 2 should be applied")
+	}
+	if w.Header().Get("X-Middleware-3") != "" {
+		t.Error("Middleware 3 should not be applied (UseIf false)")
 	}
 }
 

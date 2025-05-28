@@ -171,8 +171,14 @@ type Server struct {
 	// Configuration
 	config ServerConfig
 
+	// Middleware stack for request processing
+	middleware *MiddlewareStack
+
 	// HTTP server instance for lifecycle management
 	httpServer *http.Server
+
+	// Root handler for middleware application
+	rootHandler http.Handler
 
 	// Lifecycle management
 	shutdownCtx    context.Context
@@ -215,8 +221,14 @@ func NewServer(config ServerConfig) (*Server, error) {
 	server := &Server{
 		config: config,
 
+		// Initialize middleware stack
+		middleware: NewMiddlewareStack(),
+
 		// HTTP server instance (will be initialized in Start())
 		httpServer: nil,
+
+		// Root handler (will be set by user or default to NotFound)
+		rootHandler: nil,
 
 		// Lifecycle management
 		shutdownCtx:    shutdownCtx,
@@ -230,10 +242,14 @@ func NewServer(config ServerConfig) (*Server, error) {
 }
 
 // Start begins accepting HTTP requests on the configured address.
-// It creates an http.Server instance with validated timeouts and starts
-// the listener with proper error handling and lifecycle integration.
+// It creates an http.Server instance with validated timeouts, applies
+// all registered middleware to the root handler, and starts the listener
+// with proper error handling and lifecycle integration.
 //
-// The method is thread-safe and idepmotent - calling Start() on an already
+// The middleware stack is applied to the root handler during server start,
+// creating the final request processing chain.
+//
+// The method is thread-safe and idempotent - calling Start() on an already
 // started server returns an error without side effects.
 //
 // Returns:
@@ -254,9 +270,13 @@ func (s *Server) Start() error {
 		return fmt.Errorf("%s: server already started", ServerErrorPrefix)
 	}
 
+	// Apply middleware to root handler
+	finalHandler := s.middleware.Apply(s.rootHandler)
+
 	// Create HTTP server instance with validated configuration
 	s.httpServer = &http.Server{
 		Addr:         s.config.Address(),
+		Handler:      finalHandler,
 		ReadTimeout:  s.config.ReadTimeout,
 		WriteTimeout: s.config.WriteTimeout,
 		IdleTimeout:  s.config.IdleTimeout,
@@ -367,6 +387,23 @@ func (s *Server) IsStarted() bool {
 	return s.started
 }
 
+// SetHandler sets the root handler for the server. The handler will be
+// wrapped with all registered middleware when the server starts.
+//
+// If no handler is set, the server will return 404 Not Found for all requests.
+//
+// Parameters:
+//   - handler: The root HTTP handler for the server
+//
+// Example:
+//
+//	mux := http.NewServeMux()
+//	mux.HandleFunc("/health", healthHandler)
+//	server.SetHandler(mux)
+func (s *Server) SetHandler(handler http.Handler) {
+	s.rootHandler = handler
+}
+
 // Config returns a copy of the server configuration
 func (s *Server) Config() ServerConfig {
 	return s.config
@@ -377,9 +414,33 @@ func (s *Server) Address() string {
 	return s.config.Address()
 }
 
+// Handler returns the current root handler, or nil if none is set.
+//
+// Returns:
+//   - http.Handler: The current root handler, or nil
+func (s *Server) Handler() http.Handler {
+	return s.rootHandler
+}
+
 // Host returns the configured host address
 func (s *Server) Host() string {
 	return s.config.Host
+}
+
+// Middleware returns the server's middleware stack for configuration.
+// This allows users to add middleware during server setup.
+//
+// Returns:
+//   - *MiddlewareStack: The server's middleware stack
+//
+// Example:
+//
+//	server.
+//		Middleware().
+//		Use(RequestIDMiddleware()).
+//		UseIf(config.EnableCORS, CORSMiddleware())
+func (s *Server) Middleware() *MiddlewareStack {
+	return s.middleware
 }
 
 // Port returns the configured port as a string

@@ -907,9 +907,19 @@ func TestServer_SetHandler(t *testing.T) {
 
 	server.SetHandler(testHandler)
 
-	// Verify handler was set
-	if server.Handler() != testHandler {
-		t.Error("Handler was not set correctly")
+	// Verify handler was set by testing its behavior
+	req := httptest.NewRequest("GET", "/", nil)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+
+	expectedBody := "test response"
+	if recorder.Body.String() != expectedBody {
+		t.Errorf("Expected body %q, got %q", expectedBody, recorder.Body.String())
 	}
 }
 
