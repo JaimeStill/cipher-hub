@@ -1,30 +1,30 @@
-# Step 2.1.1.2: Implement Basic HTTP Listener Setup
+# Step 2.1.1.3: Add Graceful Shutdown Mechanism
 
 ## Overview
 
-**Step**: 2.1.1.2  
+**Step**: 2.1.1.3  
 **Task**: 2.1.1 (HTTP Server Creation)  
 **Target**: 2.1 (Basic Server Setup)  
 **Phase**: 2 (HTTP Server Infrastructure)  
 
 **Time Estimate**: 25-30 minutes  
-**Scope**: Implement HTTP listener with `Start()` method and proper lifecycle integration
+**Scope**: Implement graceful shutdown with HTTP server coordination and signal handling
 
 ## Step Objectives
 
 ### Primary Deliverables
-- [x] **Foundation Ready**: Server struct with `httpServer` field and `WithCancel` context ✅
-- [ ] **Start() Method**: Implement HTTP server creation and listener setup
-- [ ] **Lifecycle Integration**: Connect with shutdown context for graceful management
-- [ ] **Error Handling**: Comprehensive error handling with consistent patterns
-- [ ] **State Management**: Update `started` field and accessor behavior
+- [ ] **Enhanced Shutdown() Method**: Coordinate with `http.Server.Shutdown()` for graceful termination
+- [ ] **Signal Handling**: Implement SIGINT and SIGTERM handling in `main.go`
+- [ ] **In-Flight Request Completion**: Ensure active requests complete before shutdown
+- [ ] **Shutdown Context Resolution**: Fix context timeout pattern for proper coordination
+- [ ] **Resource Cleanup**: Complete server lifecycle with proper state management
 
 ### Implementation Requirements
-- **File Location**: `internal/server/server.go` (extend existing implementation)
-- **Architecture Focus**: HTTP server lifecycle management with proper shutdown coordination
-- **Security Focus**: Resource management and proper error handling without information leakage
-- **Go Best Practices**: Standard library `http.Server` usage with context integration
-- **Foundation Usage**: Leverage validated configuration and established error patterns
+- **Files Modified**: `internal/server/server.go`, `cmd/cipher-hub/main.go`
+- **Architecture Focus**: Complete HTTP server lifecycle with production-ready shutdown
+- **Security Focus**: Proper resource cleanup and state consistency
+- **Go Best Practices**: Context management and goroutine coordination
+- **Foundation Usage**: Leverage established thread safety and error patterns
 
 ---
 
@@ -32,64 +32,64 @@
 
 ### Technical Specifications
 
-#### HTTP Server Configuration
-- **Server Creation**: Use `http.Server` with validated timeout configuration
-- **Address Binding**: Use `s.config.Address()` for consistent address formatting
-- **Timeout Application**: Apply `ReadTimeout`, `WriteTimeout`, and `IdleTimeout` from config
-- **Context Integration**: Coordinate with existing shutdown context for lifecycle management
+#### Context Pattern Resolution
+- **Fix Shutdown Context**: Use `WithCancel` for coordination, separate timeout for HTTP shutdown
+- **Context Semantics**: Clear separation between coordination context and operation timeout
+- **Timeout Application**: Use `ShutdownTimeout` directly in `http.Server.Shutdown()`
 
-#### Error Handling Standards
-- **Consistent Prefixes**: Use `ServerErrorPrefix` for all server operation errors
-- **Error Wrapping**: Proper error chain preservation with `fmt.Errorf()` and `%w`
-- **Information Safety**: No sensitive configuration details in error messages
-- **Resource Cleanup**: Proper cleanup on startup failure scenarios
+#### Enhanced Shutdown Method
+- **HTTP Server Coordination**: Use `http.Server.Shutdown()` with configured timeout
+- **Thread Safety**: Maintain mutex protection for state transitions
+- **Error Handling**: Proper error propagation with consistent prefixes
+- **State Management**: Clean up server instance and update started flag
 
-#### State Management
-- **Started Flag**: Update `s.started` field to reflect server operational state
-- **Server Instance**: Store created `http.Server` in `s.httpServer` field for lifecycle management
-- **Thread Safety**: Consider concurrent access patterns for state fields
+#### Signal Handling Architecture
+- **Location**: Implement in `cmd/cipher-hub/main.go` for separation of concerns
+- **Signals**: Handle SIGINT (Ctrl+C) and SIGTERM (container orchestration)
+- **Coordination**: Use existing `Shutdown()` method for consistency
+- **Graceful Termination**: Allow shutdown timeout before forced exit
 
 ---
 
 ## Implementation
 
-### Step 1: Update Server Struct for Thread Safety
+### Step 1: Fix Shutdown Context Pattern
 
 **File**: `internal/server/server.go`
 
-First, update the `Server` struct to include mutex for thread safety:
+Update the `NewServer` constructor to use `WithCancel` for coordination:
 
 ```go
-// Server represents the HTTP server with configuration and lifecycle management
-type Server struct {
-	// Configuration
-	config ServerConfig
-
-	// HTTP server instance for lifecycle management
-	httpServer *http.Server
-
-	// Lifecycle management
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
-
-	// Server state
-	started bool
-	mu      sync.RWMutex // Protects server state for concurrent access
-}
-```
-
-**Changes**:
-- ✅ **Added**: `mu sync.RWMutex` field for thread-safe state management
-
-### Step 2: Update NewServer Constructor
-
-**File**: `internal/server/server.go`
-
-Update the constructor to initialize the mutex:
-
-```go
+// NewServer creates a new HTTP server instance with the specified configuration.
+// It validates the configuration, applies secure defaults, and prepares the server
+// for lifecycle management with proper shutdown coordination.
+//
+// Parameters:
+//   - config: ServerConfig containing host, port, and timeout configuration
+//
+// Returns:
+//   - *Server: Configured server instance ready for Start()
+//   - error: Validation error if configuration is invalid
+//
+// Security: Applies secure timeout defaults and validates all configuration parameters.
+// The server is prepared but not started; call Start() to begin accepting connections.
+//
+// Context Pattern: Uses WithCancel for shutdown coordination rather than WithTimeout.
+// This separates coordination signaling from shutdown operation timeout, allowing
+// the actual shutdown timeout to be applied directly in the Shutdown() method.
 func NewServer(config ServerConfig) (*Server, error) {
-	// ... existing validation code ...
+	// Apply defaults for any zero-value timeout fields
+	config.ApplyDefaults()
+
+	// Validate the complete configuration
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Create shutdown context for graceful lifecycle management
+	// Use WithCancel for coordination, timeout will be applied in Shutdown()
+	// This pattern separates coordination (cancel signal) from operation timeout
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
 	// Create server with validated configuration
 	server := &Server{
@@ -102,115 +102,70 @@ func NewServer(config ServerConfig) (*Server, error) {
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
 		started:        false,
-		mu:             sync.RWMutex{}, // Initialize mutex
+		mu:             sync.RWMutex{},
 	}
 
 	return server, nil
 }
 ```
 
-### Step 3: Add Start() Method
+### Step 2: Enhance Shutdown() Method
 
 **File**: `internal/server/server.go`
 
-Add the `Start()` method after the existing accessor methods:
+Replace the existing basic `Shutdown()` method with enhanced implementation:
 
 ```go
-// Start begins accepting HTTP requests on the configured address.
-// It creates an http.Server instance with validated timeouts and starts
-// the listener with proper error handling and lifecycle integration.
+// Shutdown initiates graceful shutdown of the HTTP server.
+// It coordinates with the HTTP server to complete in-flight requests
+// within the configured shutdown timeout before forcing termination.
 //
-// The method is thread-safe and idempotent - calling Start() on an already 
-// started server returns an error without side effects.
+// The method is thread-safe and idempotent - calling Shutdown() on an
+// already shut down server returns nil without side effects.
 //
 // Returns:
-//   - error: Listener setup error, port binding error, or server already started
+//   - error: Shutdown error if graceful shutdown fails within timeout
 //
-// Security: Uses validated configuration to prevent resource exhaustion
-// and integrates with shutdown context for graceful termination.
-func (s *Server) Start() error {
+// Security: Ensures proper resource cleanup and state consistency.
+// In-flight requests complete within ShutdownTimeout before forced termination.
+func (s *Server) Shutdown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if server is already started
-	if s.started {
-		return fmt.Errorf("%s: server already started", ServerErrorPrefix)
+	// Cancel coordination context for any waiting operations
+	defer s.shutdownCancel()
+
+	// Check if server is already shut down
+	if !s.started || s.httpServer == nil {
+		return nil // Already shut down, idempotent behavior
 	}
 
-	// Create HTTP server instance with validated configuration
-	s.httpServer = &http.Server{
-		Addr:         s.config.Address(),
-		ReadTimeout:  s.config.ReadTimeout,
-		WriteTimeout: s.config.WriteTimeout,
-		IdleTimeout:  s.config.IdleTimeout,
-		// Handler will be set in future steps - for now nil is acceptable
+	// Create timeout context for HTTP server shutdown
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
+	defer cancel()
+
+	// Perform graceful HTTP server shutdown
+	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+		// If graceful shutdown fails, clean up state anyway
+		s.started = false
+		s.httpServer = nil
+		return fmt.Errorf("%s: graceful shutdown failed after %v timeout: %w", 
+			ServerErrorPrefix, s.config.ShutdownTimeout, err)
 	}
 
-	// Store address for error handling (before potential cleanup)
-	addr := s.httpServer.Addr
-
-	// Create listener with error handling
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		s.httpServer = nil // Clean up on failure
-		return fmt.Errorf("%s: failed to create listener on %s: %w", 
-			ServerErrorPrefix, addr, err)
-	}
-
-	// Channel for server readiness signaling
-	ready := make(chan struct{})
-
-	// Start server in goroutine with proper coordination
-	go func() {
-		defer func() {
-			s.mu.Lock()
-			s.started = false
-			s.mu.Unlock()
-			listener.Close()
-		}()
-
-		// Signal readiness before serving
-		close(ready)
-
-		// Serve with proper error handling
-		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-			// Note: This will be replaced with structured logging in future steps
-			log.Printf("HTTP server error: %v", err)
-		}
-	}()
-
-	// Update state before waiting for readiness
-	s.started = true
-
-	// Wait for server to be ready
-	<-ready
+	// Update server state after successful shutdown
+	s.started = false
+	s.httpServer = nil
 
 	return nil
 }
 ```
 
-### Step 4: Update IsStarted() Method
+### Step 3: Add Required Imports
 
 **File**: `internal/server/server.go`
 
-Enhance the existing `IsStarted()` method with thread safety:
-
-```go
-// IsStarted returns whether the server is currently accepting connections.
-// This method is safe for concurrent access and reflects the actual
-// operational state of the HTTP server.
-func (s *Server) IsStarted() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.started
-}
-```
-
-### Step 5: Add Required Imports
-
-**File**: `internal/server/server.go`
-
-Ensure the following imports are present at the top of the file:
+Ensure all required imports are present (add any missing ones):
 
 ```go
 import (
@@ -227,11 +182,137 @@ import (
 )
 ```
 
-**New imports added**:
-- `"log"` - for structured logging in server goroutine
-- `"net"` - for `net.Listen()` functionality
-- `"net/http"` - for `http.Server` and `http.ErrServerClosed`
-- `"sync"` - for mutex-based thread safety
+### Step 4: Implement Signal Handling
+
+**File**: `cmd/cipher-hub/main.go`
+
+Replace the current placeholder implementation with signal handling:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"cipher-hub/internal/server"
+)
+
+func main() {
+	fmt.Println("Cipher Hub - Key Management Service")
+	log.Println("Starting Cipher Hub...")
+
+	// Create server configuration
+	config := server.ServerConfig{
+		Host: "localhost",
+		Port: "8080",
+		// Timeouts will be set to secure defaults
+	}
+
+	// Create server instance
+	srv, err := server.NewServer(config)
+	if err != nil {
+		log.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Create channel for shutdown signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Start graceful shutdown handler (before server start to prevent races)
+	go func() {
+		sig := <-sigChan
+		log.Printf("Received signal %v, initiating graceful shutdown...", sig)
+		
+		// Use server's configured timeout plus buffer for coordination
+		shutdownTimeout := srv.ShutdownTimeout() + 5*time.Second
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+
+		// Channel to signal shutdown completion
+		done := make(chan error, 1)
+		
+		// Perform shutdown in goroutine
+		go func() {
+			done <- srv.Shutdown()
+		}()
+
+		// Wait for shutdown completion or timeout
+		select {
+		case err := <-done:
+			if err != nil {
+				log.Printf("Server shutdown failed: %v", err)
+				os.Exit(1)
+			}
+			log.Println("Graceful shutdown completed")
+			os.Exit(0)
+		case <-shutdownCtx.Done():
+			log.Printf("Shutdown timeout (%v) exceeded, forcing exit", shutdownTimeout)
+			os.Exit(1)
+		}
+	}()
+
+	// Start the server
+	log.Printf("Starting HTTP server on %s", srv.Address())
+	if err := srv.Start(); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
+
+	// Keep main goroutine alive
+	log.Println("Server started successfully. Press Ctrl+C to stop.")
+	select {} // Block forever, shutdown handled by signal handler
+}
+```
+
+### Step 5: Add Package Documentation
+
+**File**: `cmd/cipher-hub/doc.go`
+
+Update the package documentation to reflect signal handling:
+
+```go
+// Package main provides the entry point for the Cipher Hub key management service.
+//
+// Cipher Hub is a containerized, security-first key management service designed
+// to act as a centralized cryptographic layer for distributed systems. It provides
+// secure key generation, storage, distribution, and lifecycle management through
+// a RESTful HTTP API.
+//
+// The service is designed for sidecar deployment patterns within container
+// orchestration platforms, handling all cryptographic operations for application
+// services without requiring changes to application code.
+//
+// Key Capabilities:
+//   - Secure cryptographic key generation and storage
+//   - Service registration and participant management
+//   - RESTful API for key operations with comprehensive authentication
+//   - Container-native design with health checks and graceful shutdown
+//   - Comprehensive audit logging for all key operations
+//
+// Signal Handling:
+// The service handles SIGINT and SIGTERM signals for graceful shutdown:
+//   - SIGINT (Ctrl+C): Initiates graceful shutdown with configured timeout
+//   - SIGTERM: Container orchestration graceful shutdown signal
+//   - Shutdown allows in-flight requests to complete within timeout bounds
+//
+// Usage:
+//
+//	cipher-hub [flags]
+//
+// The service reads configuration from environment variables and provides
+// health check endpoints for container orchestration integration.
+//
+// Security Considerations:
+// This service handles sensitive cryptographic material and should be deployed
+// with appropriate security controls including TLS, authentication, and
+// network isolation.
+package main
+```
 
 ---
 
@@ -239,83 +320,106 @@ import (
 
 ### Resource Management Security
 
-#### Port Binding Validation
-- **Address Validation**: Use pre-validated `s.config.Address()` to prevent injection
-- **Port Range Security**: Leverage existing port validation (1-65535) from configuration
-- **Permission Handling**: Proper error handling for insufficient permissions (ports < 1024)
+#### Graceful Shutdown Security
+- **In-Flight Request Completion**: Allow active requests to complete within timeout bounds
+- **Resource Cleanup**: Proper cleanup of listeners, connections, and server instances
+- **State Consistency**: Atomic state updates preventing inconsistent server state
+- **Timeout Enforcement**: Prevent indefinite shutdown blocking with configurable timeout
 
-#### Timeout Security
-- **Resource Exhaustion Prevention**: Apply validated timeout bounds from configuration
-- **DoS Protection**: `ReadTimeout` and `WriteTimeout` prevent slow client attacks
-- **Connection Management**: `IdleTimeout` prevents connection pool exhaustion
+#### Signal Handling Security
+- **Signal Validation**: Only handle expected signals (SIGINT, SIGTERM)
+- **Graceful Degradation**: Proper error handling if graceful shutdown fails
+- **Timeout Protection**: Prevent shutdown from blocking indefinitely
+- **Clean Exit**: Proper process termination with appropriate exit codes
 
-#### State Management Security
-- **Idempotent Operations**: Prevent double-start scenarios that could cause resource leaks
-- **Atomic State Updates**: Update `started` flag consistently with actual server state
-- **Cleanup on Failure**: Proper resource cleanup when startup fails
+#### Thread Safety During Shutdown
+```go
+// Correct: Thread-safe shutdown with proper locking
+func (s *Server) Shutdown() error {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    
+    // Check state before proceeding
+    if !s.started || s.httpServer == nil {
+        return nil
+    }
+    
+    // Perform shutdown operations...
+}
+
+// Incorrect: Race condition potential
+func (s *Server) Shutdown() error {
+    if s.httpServer != nil { // Unsafe check
+        s.httpServer.Shutdown(ctx) // Potential nil pointer
+    }
+}
+```
 
 ### Error Handling Security
 
-#### Information Disclosure Prevention
+#### Shutdown Error Management
 ```go
-// Correct: Safe error messages
-return fmt.Errorf("%s: failed to create listener on %s: %w", 
-    ServerErrorPrefix, s.httpServer.Addr, err)
+// Correct: Secure error handling with cleanup
+if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+    // Clean up state even on error
+    s.started = false
+    s.httpServer = nil
+    return fmt.Errorf("%s: graceful shutdown failed: %w", ServerErrorPrefix, err)
+}
 
-// Incorrect: Could leak sensitive information
-return fmt.Errorf("failed to bind to %s with config %+v: %w", addr, s.config, err)
+// Incorrect: Incomplete cleanup on error
+if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+    return err // State not cleaned up
+}
 ```
-
-#### Error Response Standards
-- **Consistent Prefixes**: Use `ServerErrorPrefix` for error categorization
-- **Proper Error Chaining**: Preserve error context with `%w` verb
-- **No Configuration Leakage**: Don't include full configuration in error messages
 
 ---
 
 ## Testing Requirements
 
-### Step 1: Add Start() Method Tests
+### Step 1: Add Enhanced Shutdown Tests
 
 **File**: `internal/server/server_test.go`
 
-Add comprehensive tests for the `Start()` method:
+Add comprehensive tests for the enhanced shutdown functionality:
 
 ```go
-func TestServer_Start(t *testing.T) {
+func TestServer_Shutdown(t *testing.T) {
 	tests := []struct {
-    name       string
-    config     ServerConfig
-    wantErr    bool
-    errMessage string
+		name        string
+		config      ServerConfig
+		startServer bool
+		wantErr     bool
 	}{
 		{
-			name: "successful start with default config",
+			name: "successful shutdown of running server",
 			config: ServerConfig{
-					Host: "localhost",
-					Port: "0", // Use random port for testing
+				Host:            "localhost",
+				Port:            "0",
+				ShutdownTimeout: 5 * time.Second,
 			},
-			wantErr: false,
+			startServer: true,
+			wantErr:     false,
 		},
 		{
-			name: "successful start with custom timeouts",
+			name: "shutdown of already stopped server",
 			config: ServerConfig{
-					Host:         "127.0.0.1",
-					Port:         "0", // Use random port for testing
-					ReadTimeout:  20 * time.Second,
-					WriteTimeout: 25 * time.Second,
-					IdleTimeout:  90 * time.Second,
+				Host:            "localhost",
+				Port:            "0",
+				ShutdownTimeout: 5 * time.Second,
 			},
-			wantErr: false,
+			startServer: false,
+			wantErr:     false,
 		},
 		{
-			name: "start with invalid port",
+			name: "shutdown with very short timeout",
 			config: ServerConfig{
-					Host: "localhost",
-					Port: "99999", // Invalid port number > 65535
+				Host:            "localhost",
+				Port:            "0",
+				ShutdownTimeout: 1 * time.Millisecond, // Very short timeout
 			},
-			wantErr: true,
-			errMessage: "failed to create listener",
+			startServer: true,
+			wantErr:     false, // Should still work for basic case
 		},
 	}
 
@@ -326,71 +430,55 @@ func TestServer_Start(t *testing.T) {
 				t.Fatalf("NewServer() unexpected error: %v", err)
 			}
 
-			// Verify initial state
-			if server.IsStarted() {
-				t.Error("Server should not be started initially")
-			}
-			if server.httpServer != nil {
-				t.Error("httpServer should be nil before Start()")
+			// Start server if requested
+			if tt.startServer {
+				err = server.Start()
+				if err != nil {
+					t.Fatalf("Start() unexpected error: %v", err)
+				}
+
+				// Verify server is running
+				if !server.IsStarted() {
+					t.Error("Server should be started before shutdown test")
+				}
 			}
 
-			// Start the server
-			err = server.Start()
+			// Test shutdown
+			err = server.Shutdown()
 
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("Start() expected error, got nil")
+					t.Error("Shutdown() expected error, got nil")
 				}
-				if tt.errMessage != "" && !strings.Contains(err.Error(), tt.errMessage) {
-					t.Errorf("Start() error = %v, want error containing %v", err, tt.errMessage)
+			} else {
+				if err != nil {
+					t.Errorf("Shutdown() unexpected error: %v", err)
 				}
-				return
 			}
 
-			if err != nil {
-				t.Errorf("Start() unexpected error: %v", err)
-				return
+			// Verify server state after shutdown
+			if server.IsStarted() {
+				t.Error("Server should not be started after Shutdown()")
 			}
 
-			// Verify server state after successful start
-			if !server.IsStarted() {
-				t.Error("Server should be started after Start()")
+			// Verify shutdown is idempotent
+			err2 := server.Shutdown()
+			if err2 != nil {
+				t.Errorf("Second Shutdown() should be idempotent, got error: %v", err2)
 			}
-			if server.httpServer == nil {
-				t.Error("httpServer should not be nil after Start()")
-			}
-
-			// Verify HTTP server configuration
-			if server.httpServer.Addr != server.Address() {
-				t.Errorf("httpServer.Addr = %v, want %v", server.httpServer.Addr, server.Address())
-			}
-			if server.httpServer.ReadTimeout != server.ReadTimeout() {
-				t.Errorf("httpServer.ReadTimeout = %v, want %v", server.httpServer.ReadTimeout, server.ReadTimeout())
-			}
-			if server.httpServer.WriteTimeout != server.WriteTimeout() {
-				t.Errorf("httpServer.WriteTimeout = %v, want %v", server.httpServer.WriteTimeout, server.WriteTimeout())
-			}
-			if server.httpServer.IdleTimeout != server.IdleTimeout() {
-				t.Errorf("httpServer.IdleTimeout = %v, want %v", server.httpServer.IdleTimeout, server.IdleTimeout())
-			}
-
-			// Cleanup
-			server.Shutdown()
-			
-			// Wait briefly for shutdown to complete
-			time.Sleep(50 * time.Millisecond)
 		})
 	}
 }
 ```
 
-### Step 2: Add Double-Start Prevention Test
+### Step 2: Add Concurrent Shutdown Test
 
 ```go
-func TestServer_Start_AlreadyStarted(t *testing.T) {
+func TestServer_Shutdown_Concurrent(t *testing.T) {
 	config := ServerConfig{
-		Host: "localhost",
-		Port: "0", // Use random port
+		Host:            "localhost",
+		Port:            "0",
+		ShutdownTimeout: 2 * time.Second,
 	}
 
 	server, err := NewServer(config)
@@ -401,95 +489,54 @@ func TestServer_Start_AlreadyStarted(t *testing.T) {
 	// Start the server
 	err = server.Start()
 	if err != nil {
-		t.Fatalf("First Start() unexpected error: %v", err)
-	}
-	defer func() {
-		server.Shutdown()
-		time.Sleep(50 * time.Millisecond)
-	}()
-
-	// Try to start again - should fail
-	err = server.Start()
-	if err == nil {
-		t.Error("Second Start() should return error")
+		t.Fatalf("Start() unexpected error: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "server already started") {
-		t.Errorf("Start() error = %v, want error containing 'server already started'", err)
+	// Test concurrent shutdown calls
+	var wg sync.WaitGroup
+	errors := make(chan error, 3)
+
+	// Launch multiple concurrent shutdown calls
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errors <- server.Shutdown()
+		}()
 	}
 
-	// Verify server is still running after failed second start
-	if !server.IsStarted() {
-		t.Error("Server should still be running after failed second start")
+	wg.Wait()
+	close(errors)
+
+	// Collect results
+	var errorCount int
+	for err := range errors {
+		if err != nil {
+			errorCount++
+			t.Logf("Shutdown error: %v", err)
+		}
+	}
+
+	// All shutdown calls should succeed (idempotent)
+	if errorCount > 0 {
+		t.Errorf("Expected all concurrent shutdowns to succeed, got %d errors", errorCount)
+	}
+
+	// Verify final state
+	if server.IsStarted() {
+		t.Error("Server should not be started after concurrent shutdown")
 	}
 }
 ```
 
-### Step 3: Add Port Binding Error Test
+### Step 3: Add Shutdown Context Test
 
 ```go
-func TestServer_Start_PortInUse(t *testing.T) {
-	// Start first server to occupy a port
-	config1 := ServerConfig{
-		Host: "localhost",
-		Port: "0", // Use random port
-	}
-
-	server1, err := NewServer(config1)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	// Start first server
-	err = server1.Start()
-	if err != nil {
-		t.Fatalf("First server start failed: %v", err)
-	}
-	defer func() {
-		server1.Shutdown()
-		time.Sleep(50 * time.Millisecond)
-	}()
-
-	// Get the actual port used by first server
-	// Note: This requires accessing the actual listener port
-	// For now, we'll test the general port binding error pattern
-	
-	// Try to start second server on a specific port that should be available
-	config2 := ServerConfig{
-		Host: "localhost",
-		Port: "0", // This should succeed with a different random port
-	}
-
-	server2, err := NewServer(config2)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	// This should succeed since we're using port "0" (random assignment)
-	err = server2.Start()
-	if err != nil {
-		t.Errorf("Second server start should succeed with random port: %v", err)
-	} else {
-		server2.Shutdown()
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	// Note: Testing actual port conflicts requires more complex setup
-	// This test validates the general error handling pattern
-}
-```
-
-### Step 4: Add HTTP Server Configuration Test
-
-```go
-func TestServer_HTTPServerConfiguration(t *testing.T) {
+func TestServer_ShutdownContext(t *testing.T) {
 	config := ServerConfig{
 		Host:            "localhost",
-		Port:            "0",
-		ReadTimeout:     25 * time.Second,
-		WriteTimeout:    30 * time.Second,
-		IdleTimeout:     120 * time.Second,
-		ShutdownTimeout: 45 * time.Second,
+		Port:            "8080",
+		ShutdownTimeout: 5 * time.Second,
 	}
 
 	server, err := NewServer(config)
@@ -497,77 +544,212 @@ func TestServer_HTTPServerConfiguration(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
+	ctx := server.ShutdownContext()
+	if ctx == nil {
+		t.Error("ShutdownContext() returned nil")
+	}
+
+	// Verify context is not canceled initially
+	select {
+	case <-ctx.Done():
+		t.Error("ShutdownContext() should not be canceled initially")
+	default:
+		// Expected - context should be active
+	}
+
+	// Test shutdown cancels context
+	err = server.Shutdown()
+	if err != nil {
+		t.Errorf("Shutdown() unexpected error: %v", err)
+	}
+
+	// Verify context is canceled after shutdown
+	select {
+	case <-ctx.Done():
+		// Expected - context should be canceled
+	default:
+		t.Error("ShutdownContext() should be canceled after Shutdown()")
+	}
+
+	// Verify the context is properly canceled
+	if ctx.Err() != context.Canceled {
+		t.Errorf("Expected context.Canceled, got %v", ctx.Err())
+	}
+}
+```
+
+### Step 4: Add Server Lifecycle Integration Test
+
+```go
+func TestServer_Shutdown_TimeoutValidation(t *testing.T) {
+	tests := []struct {
+		name            string
+		shutdownTimeout time.Duration
+		expectSuccess   bool
+	}{
+		{
+			name:            "very short timeout",
+			shutdownTimeout: 1 * time.Millisecond,
+			expectSuccess:   true, // Should still work for basic shutdown
+		},
+		{
+			name:            "reasonable timeout",
+			shutdownTimeout: 2 * time.Second,
+			expectSuccess:   true,
+		},
+		{
+			name:            "long timeout",
+			shutdownTimeout: 30 * time.Second,
+			expectSuccess:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := ServerConfig{
+				Host:            "localhost",
+				Port:            "0",
+				ShutdownTimeout: tt.shutdownTimeout,
+			}
+
+			server, err := NewServer(config)
+			if err != nil {
+				t.Fatalf("NewServer() unexpected error: %v", err)
+			}
+
+			// Start the server
+			err = server.Start()
+			if err != nil {
+				t.Fatalf("Start() unexpected error: %v", err)
+			}
+
+			// Record shutdown start time
+			start := time.Now()
+
+			// Perform shutdown
+			err = server.Shutdown()
+			shutdownDuration := time.Since(start)
+
+			if tt.expectSuccess {
+				if err != nil {
+					t.Errorf("Shutdown() unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Error("Shutdown() expected error for timeout case")
+				}
+			}
+
+			// Verify shutdown completed reasonably quickly
+			// (Should be much faster than timeout for basic case)
+			maxExpectedDuration := tt.shutdownTimeout + 1*time.Second
+			if shutdownDuration > maxExpectedDuration {
+				t.Errorf("Shutdown took %v, expected less than %v", 
+					shutdownDuration, maxExpectedDuration)
+			}
+
+			// Verify server state
+			if server.IsStarted() {
+				t.Error("Server should not be started after shutdown")
+			}
+		})
+	}
+}
+
+func TestServer_Shutdown_TimeoutConfiguration(t *testing.T) {
+	config := ServerConfig{
+		Host:            "localhost",
+		Port:            "0",
+		ShutdownTimeout: 3 * time.Second,
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Verify timeout is configured correctly
+	if server.ShutdownTimeout() != 3*time.Second {
+		t.Errorf("ShutdownTimeout() = %v, want %v", 
+			server.ShutdownTimeout(), 3*time.Second)
+	}
+
+	// Test shutdown timeout documentation is accurate
+	if server.ShutdownTimeout() != config.ShutdownTimeout {
+		t.Errorf("ShutdownTimeout() should match config value")
+	}
+}
+	config := ServerConfig{
+		Host:            "localhost",
+		Port:            "0",
+		ShutdownTimeout: 3 * time.Second,
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Test initial state
+	if server.IsStarted() {
+		t.Error("New server should not be started")
+	}
+
+	// Test start
 	err = server.Start()
 	if err != nil {
 		t.Fatalf("Start() unexpected error: %v", err)
 	}
-	defer func() {
+
+	if !server.IsStarted() {
+		t.Error("Server should be started after Start()")
+	}
+
+	// Brief pause to ensure server is fully operational
+	time.Sleep(50 * time.Millisecond)
+
+	// Test shutdown
+	err = server.Shutdown()
+	if err != nil {
+		t.Errorf("Shutdown() unexpected error: %v", err)
+	}
+
+	if server.IsStarted() {
+		t.Error("Server should not be started after Shutdown()")
+	}
+
+	// Test idempotent shutdown
+	err = server.Shutdown()
+	if err != nil {
+		t.Errorf("Second Shutdown() should be idempotent: %v", err)
+	}
+
+	// Test that start after shutdown should fail
+	err = server.Start()
+	if err == nil {
+		t.Error("Start() after Shutdown() should fail")
+		// Clean up if it unexpectedly succeeded
 		server.Shutdown()
-		time.Sleep(50 * time.Millisecond)
-	}()
-
-	// Verify HTTP server is configured correctly
-	httpServer := server.httpServer
-	if httpServer == nil {
-		t.Fatal("httpServer should not be nil after Start()")
-	}
-
-	// Test timeout configuration
-	if httpServer.ReadTimeout != 25*time.Second {
-		t.Errorf("ReadTimeout = %v, want %v", httpServer.ReadTimeout, 25*time.Second)
-	}
-	if httpServer.WriteTimeout != 30*time.Second {
-		t.Errorf("WriteTimeout = %v, want %v", httpServer.WriteTimeout, 30*time.Second)
-	}
-	if httpServer.IdleTimeout != 120*time.Second {
-		t.Errorf("IdleTimeout = %v, want %v", httpServer.IdleTimeout, 120*time.Second)
-	}
-
-	// Test address configuration
-	expectedAddr := server.Address()
-	if httpServer.Addr != expectedAddr {
-		t.Errorf("Addr = %v, want %v", httpServer.Addr, expectedAddr)
 	}
 }
 ```
 
 ### Step 5: Update Existing Tests
 
-Ensure the existing `TestServer_IsStarted` test accounts for the new behavior:
+Update existing test cleanup to use the new shutdown method:
 
 ```go
-func TestServer_IsStarted(t *testing.T) {
-	config := ServerConfig{
-		Host: "localhost",
-		Port: "0",
-	}
+func TestServer_Start(t *testing.T) {
+	// ... existing test code ...
 
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
+	// Update cleanup section
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
 
-	// Server should not be started initially
-	if server.IsStarted() {
-		t.Error("IsStarted() should return false for new server")
-	}
-
-	// Start the server
-	err = server.Start()
-	if err != nil {
-		t.Fatalf("Start() unexpected error: %v", err)
-	}
-
-	// Server should be started after Start()
-	if !server.IsStarted() {
-		t.Error("IsStarted() should return true after Start()")
-	}
-
-	// Cleanup
-	server.Shutdown()
-	time.Sleep(50 * time.Millisecond)
-
-	// Note: IsStarted() behavior after shutdown will be tested in Step 2.1.1.3
+	// ... rest of test ...
 }
 ```
 
@@ -581,7 +763,7 @@ func TestServer_IsStarted(t *testing.T) {
 cd cipher-hub/
 
 # Verify clean build
-go build ./internal/server
+go build ./...
 
 # Expected: No compilation errors
 ```
@@ -591,203 +773,216 @@ go build ./internal/server
 # Run all server tests with verbose output
 go test ./internal/server -v
 
-# Expected: All tests pass including new Start() tests
+# Expected: All tests pass including new shutdown tests
 # Sample expected output:
-# === RUN   TestServer_Start
-# === RUN   TestServer_Start_AlreadyStarted  
-# === RUN   TestServer_HTTPServerConfiguration
-# === RUN   TestServer_IsStarted
+# === RUN   TestServer_Shutdown
+# === RUN   TestServer_Shutdown_Concurrent
+# === RUN   TestServer_ShutdownContext
+# === RUN   TestServer_CompleteLifecycle
 # --- PASS: All tests should pass
 # PASS
 ```
 
-### Step 3: Test Coverage Analysis
+### Step 3: Integration Test with Main
+```bash
+# Build and run the main application
+go build ./cmd/cipher-hub
+
+# Run in background
+./cipher-hub &
+CIPHER_PID=$!
+
+# Wait for startup
+sleep 2
+
+# Test graceful shutdown with SIGTERM
+kill -TERM $CIPHER_PID
+
+# Expected: Graceful shutdown message in logs
+# "Received signal terminated, initiating graceful shutdown..."
+# "Graceful shutdown completed"
+```
+
+### Step 4: Manual Signal Testing
+```bash
+# Run the application interactively
+go run ./cmd/cipher-hub
+
+# Expected output:
+# "Cipher Hub - Key Management Service"
+# "Starting Cipher Hub..."
+# "Starting HTTP server on localhost:8080"
+# "Server started successfully. Press Ctrl+C to stop."
+
+# Test graceful shutdown with Ctrl+C
+# Expected:
+# "Received signal interrupt, initiating graceful shutdown..."
+# "Graceful shutdown completed"
+# Clean exit
+
+# Note: The shutdown timeout in main.go uses server's configured timeout
+# plus a 5-second buffer to prevent coordination timeout issues
+```
+
+### Step 5: Container Signal Testing (Optional)
+```bash
+# Build Docker image (when Dockerfile is available)
+# docker build -t cipher-hub .
+
+# Test container signal handling
+# docker run --name test-cipher cipher-hub &
+# docker kill -s TERM test-cipher
+
+# Expected: Graceful shutdown with SIGTERM
+# "Received signal terminated, initiating graceful shutdown..."
+# "Graceful shutdown completed"
+```
+
+### Step 6: Code Quality Verification
+```bash
+# Format and lint checks
+go fmt ./...
+go vet ./...
+
+# Expected: No issues reported
+```
+
+### Step 7: Test Coverage Analysis
 ```bash
 # Check test coverage
 go test ./internal/server -cover
 
 # Expected: High coverage percentage (>90%) maintained or improved
+# New timeout validation tests should improve coverage
 ```
 
-### Step 4: Integration Verification
+### Step 8: Timeout Coordination Verification
 ```bash
-# Test actual HTTP functionality (basic verification)
-go test ./internal/server -run TestServer_Start -v
+# Verify timeout coordination works correctly
+go test ./internal/server -run TestServer_Shutdown_TimeoutValidation -v
 
-# Expected: HTTP server starts successfully and accepts connections
-```
-
-### Step 5: Code Quality Verification
-```bash
-# Format and lint checks
-go fmt ./internal/server
-go vet ./internal/server
-
-# Expected: No issues reported
-```
-
-### Step 6: Manual Verification (Optional)
-
-Create a simple test program to verify HTTP server functionality:
-
-```go
-// test_server.go - temporary test file
-package main
-
-import (
-	"fmt"
-	"log"
-	"net/http"
-	"time"
-	
-	"cipher-hub/internal/server"
-)
-
-func main() {
-	config := server.ServerConfig{
-		Host: "localhost",
-		Port: "8080",
-	}
-	
-	srv, err := server.NewServer(config)
-	if err != nil {
-		log.Fatal(err)
-	}
-	
-	fmt.Println("Starting server on", srv.Address())
-	if err := srv.Start(); err != nil {
-		log.Fatal(err)
-	}
-	
-	// Test basic connectivity
-	time.Sleep(100 * time.Millisecond)
-	resp, err := http.Get("http://" + srv.Address())
-	if err == nil {
-		fmt.Println("Server responded:", resp.Status)
-		resp.Body.Close()
-	} else {
-		fmt.Println("Expected 404 or connection reset (no handler set):", err)
-	}
-	
-	srv.Shutdown()
-	fmt.Println("Server shutdown initiated")
-}
+# Expected: All timeout scenarios pass
+# Verifies that shutdown completes within expected timeframes
 ```
 
 ---
 
 ## Completion Criteria
 
-### ✅ **Step 2.1.1.2 is complete when:**
+### ✅ **Step 2.1.1.3 is complete when:**
 
-1. **Start() Method Implementation**: 
-   - [x] Creates `http.Server` instance with validated configuration
-   - [x] Applies all timeout values from `ServerConfig`
-   - [x] Implements proper listener creation and binding with error safety
-   - [x] Updates `started` state consistently with thread safety
-   - [x] Provides idempotent behavior (prevents double-start)
-   - [x] Uses channel-based readiness signaling instead of arbitrary delays
+1. **Enhanced Shutdown() Method Implementation**:
+   - [x] Coordinates with `http.Server.Shutdown()` for graceful termination
+   - [x] Uses configured `ShutdownTimeout` for HTTP server shutdown
+   - [x] Maintains thread safety with proper mutex protection
+   - [x] Provides idempotent behavior (multiple calls safe)
+   - [x] Proper error handling with consistent error prefixes
+   - [x] Complete state cleanup (server instance and started flag)
 
-2. **Thread Safety Implementation**:
-   - [x] Adds `sync.RWMutex` for state protection
-   - [x] Protects all state access with appropriate locking
-   - [x] Ensures `IsStarted()` method is thread-safe
-   - [x] Implements proper concurrent access patterns
+2. **Shutdown Context Pattern Resolution**:
+   - [x] Uses `WithCancel` for coordination context in `NewServer()`
+   - [x] Separates coordination context from shutdown timeout for cleaner semantics
+   - [x] Proper context cleanup in `Shutdown()` method
+   - [x] Maintains backward compatibility with existing context usage
+   - [x] Enhanced documentation explaining context pattern rationale
 
-3. **Lifecycle Integration**:
-   - [x] Stores `http.Server` instance in `s.httpServer` field
-   - [x] Coordinates with shutdown context for cleanup
-   - [x] Implements graceful error handling and resource cleanup
-   - [x] Updates `IsStarted()` method behavior correctly with concurrency safety
+3. **Signal Handling Implementation**:
+   - [x] Handles SIGINT and SIGTERM signals in `main.go`
+   - [x] Implements graceful shutdown coordination with server's configured timeout
+   - [x] Uses server's ShutdownTimeout + buffer to prevent coordination timeout issues
+   - [x] Proper error handling and exit code management with descriptive messages
+   - [x] Logging for shutdown events and status
+   - [x] Separation of concerns (signals in main, shutdown in server)
+   - [x] Signal handler setup before server start to prevent race conditions
 
-4. **Error Handling**:
-   - [x] Uses `ServerErrorPrefix` for consistent error categorization
-   - [x] Implements proper error chaining with `%w` verb
-   - [x] Provides informative but secure error messages
-   - [x] Handles all error scenarios without nil pointer dereferences
-   - [x] Stores address before cleanup to prevent nil access
+4. **Resource Management**:
+   - [x] In-flight requests complete before shutdown (within timeout)
+   - [x] Proper cleanup of HTTP server instance and listeners
+   - [x] Atomic state transitions preventing inconsistent state
+   - [x] Context cancellation for coordination purposes
 
-5. **Security Implementation**:
-   - [x] Prevents resource exhaustion through validated timeouts
-   - [x] Implements secure error handling without information leakage
-   - [x] Uses validated configuration to prevent injection attacks
-   - [x] Provides proper resource cleanup on failure scenarios
-   - [x] Ensures thread-safe operations to prevent race conditions
+5. **Thread Safety and Concurrency**:
+   - [x] Thread-safe shutdown operations with mutex protection
+   - [x] Handles concurrent shutdown attempts gracefully
+   - [x] Proper goroutine coordination during shutdown
+   - [x] No race conditions between shutdown and server operations
 
 6. **Comprehensive Testing**:
-   - [x] Tests successful server start with various configurations
-   - [x] Tests idempotent behavior (double-start prevention)
-   - [x] Tests HTTP server configuration application
-   - [x] Tests state management (`IsStarted()` behavior) with concurrency
-   - [x] Tests error scenarios and edge cases
-   - [x] Includes realistic port binding error testing
+   - [x] Tests successful shutdown of running server
+   - [x] Tests idempotent shutdown behavior
+   - [x] Tests concurrent shutdown attempts
+   - [x] Tests shutdown context cancellation
+   - [x] Tests complete server lifecycle (start → shutdown → cleanup)
+   - [x] Tests timeout scenarios and edge cases with various timeout values
+   - [x] Tests timeout configuration and coordination between main.go and server
+   - [x] Validates shutdown duration expectations for performance verification
 
-7. **Code Quality**:
-   - [x] Passes formatting (`go fmt`)
-   - [x] Passes static analysis (`go vet`)
+7. **Documentation and Code Quality**:
+   - [x] Enhanced Go doc comments for shutdown functionality
+   - [x] Updated package documentation reflecting signal handling
+   - [x] Passes formatting (`go fmt`) and static analysis (`go vet`)
    - [x] Maintains high test coverage (>90%)
-   - [x] Includes comprehensive Go doc comments
-   - [x] Implements proper concurrency patterns
+   - [x] Clear completion verification through manual testing
 
-### 🏗️ **Enhanced Foundation for Future Steps**
+### 🏗️ **HTTP Server Infrastructure Complete**
 
-This implementation provides:
+This implementation completes Phase 2.1 HTTP Server Infrastructure:
+- ✅ **Step 2.1.1.1**: HTTP server configuration structure
+- ✅ **Step 2.1.1.2**: HTTP server Start() method with lifecycle management
+- ✅ **Step 2.1.1.3**: Graceful shutdown mechanism with signal handling
 
-**Step 2.1.1.3** readiness:
-- HTTP server instance available for graceful shutdown
-- Shutdown context integration established
-- Proper state management for shutdown coordination
-
-**Step 2.1.2** readiness:
-- HTTP server ready for middleware integration
-- Handler attachment point available
-- Request lifecycle management foundation established
+**Ready for Phase 2.1 Next Steps**:
+- **Step 2.1.2.1**: Middleware function signature pattern
+- **Step 2.1.3.1**: Health check system implementation
 
 ### 📁 **Files Modified**
-- `internal/server/server.go` - Added `Start()` method and enhanced documentation
-- `internal/server/server_test.go` - Added comprehensive test coverage for HTTP listener functionality
+- `internal/server/server.go` - Enhanced `Shutdown()` method and context pattern fix
+- `cmd/cipher-hub/main.go` - Complete signal handling implementation
+- `cmd/cipher-hub/doc.go` - Updated package documentation
+- `internal/server/server_test.go` - Comprehensive shutdown testing
 
 ---
 
 ## Architecture Benefits Achieved
 
-### 🔒 **Security Enhancements**
-- **Resource Protection**: Validated timeouts prevent DoS attacks
-- **State Consistency**: Thread-safe operations prevent race conditions and resource leaks
-- **Error Safety**: Secure error messages without information disclosure or nil pointer dereferences
-- **Input Validation**: Leverages existing configuration validation
-- **Concurrent Safety**: Proper mutex protection for multi-threaded environments
+### 🔒 **Production-Ready Security**
+- **Graceful Degradation**: Proper shutdown even when HTTP server shutdown fails
+- **Resource Protection**: Complete cleanup preventing resource leaks
+- **State Consistency**: Atomic state transitions with thread safety
+- **Timeout Enforcement**: Configurable shutdown timeout preventing indefinite blocking
+- **Signal Safety**: Proper signal handling without race conditions through setup ordering
+- **Timeout Coordination**: Server's configured timeout + buffer prevents coordination issues
+- **Enhanced Error Context**: Detailed error messages include timeout information for debugging
 
-### 🏗️ **Architecture Improvements**
-- **Lifecycle Management**: Clean server start/stop semantics with proper state tracking
-- **Context Integration**: Proper shutdown coordination with cancellation context
-- **State Tracking**: Reliable, thread-safe server state management for monitoring
-- **Foundation Scaling**: Ready for middleware and handler integration
-- **Concurrency Design**: Thread-safe operations supporting high-concurrency environments
+### 🏗️ **Enterprise Architecture**
+- **Container Integration**: SIGTERM support for orchestration platforms
+- **Operational Excellence**: Comprehensive logging for shutdown events
+- **Separation of Concerns**: Signal handling in main, server lifecycle in server package
+- **Configuration Driven**: Shutdown timeout configurable via ServerConfig
+- **Context Coordination**: Proper context management for shutdown signaling
 
 ### 🧪 **Testing Excellence**
-- **Comprehensive Coverage**: HTTP server functionality fully tested with concurrency scenarios
-- **Edge Case Handling**: Double-start, port binding, and error scenarios covered
-- **Integration Ready**: Foundation for full HTTP stack testing with realistic error conditions
-- **Quality Assurance**: High test coverage with thread safety validation
-- **Realistic Testing**: Port binding tests with actual server lifecycle validation
+- **Comprehensive Coverage**: All shutdown scenarios tested including edge cases
+- **Concurrency Testing**: Thread safety validated with concurrent operations
+- **Integration Testing**: Complete lifecycle testing with real HTTP server
+- **Manual Verification**: Signal handling tested with actual OS signals
+- **Regression Prevention**: Existing functionality maintained and enhanced
 
 ### ⚡ **Performance & Reliability**
-- **Channel-Based Coordination**: Reliable server readiness detection instead of arbitrary delays
-- **Goroutine Management**: Proper goroutine lifecycle with cleanup coordination
-- **Resource Efficiency**: Minimal overhead with targeted synchronization
-- **Error Recovery**: Robust error handling with proper cleanup on all failure paths
+- **Graceful Shutdown**: In-flight requests complete within timeout bounds
+- **Minimal Downtime**: Fast shutdown initiation with proper resource cleanup
+- **Memory Safety**: Proper goroutine termination and resource deallocation
+- **Operational Monitoring**: Clear logging for troubleshooting and monitoring
 
-This implementation establishes a robust, secure, and well-tested HTTP server foundation that seamlessly integrates with the existing configuration and security patterns while preparing for graceful shutdown and middleware integration in subsequent steps! 🚀
+This implementation establishes a production-ready HTTP server with complete lifecycle management, preparing Cipher Hub for middleware integration and API endpoint development in the next phase! 🚀
 
 ---
 
-## Next Step Preview
+## Next Phase Preview
 
-**Step 2.1.1.3: Add graceful shutdown mechanism** will build seamlessly on this foundation:
-- Use stored `s.httpServer` instance for `Shutdown()` method
-- Leverage established shutdown context for coordination
-- Implement signal handling for SIGINT and SIGTERM
-- Ensure in-flight requests complete before shutdown using configured `ShutdownTimeout`
+**Phase 2.1 Continuation** will build on this solid foundation:
+- **Step 2.1.2.1**: Middleware function signature pattern using established server instance
+- **Step 2.1.3.1**: Health check system leveraging complete server lifecycle
+- **Step 2.1.4.1**: Handler framework building on graceful shutdown capabilities
 
-The HTTP listener foundation is now solid and ready for the complete server lifecycle implementation.
+The HTTP server infrastructure is now production-ready with complete lifecycle management, security-conscious design, and comprehensive testing coverage.
