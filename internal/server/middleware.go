@@ -90,7 +90,8 @@ func (ms *MiddlewareStack) UseIf(condition bool, middleware Middleware) *Middlew
 }
 
 // Apply wraps the provided handler with all registered middleware functions.
-// Middleware is applied in reverse order (last registered becomes outermost).
+// Middleware is applied in registration order to achieve reverse execution order
+// (last registered becomes outermost).
 //
 // This follows the standard middleware pattern where middleware closer to
 // the registration point executes later in the request chain but earlier
@@ -101,7 +102,7 @@ func (ms *MiddlewareStack) UseIf(condition bool, middleware Middleware) *Middlew
 // all requests, avoiding per-request overhead.
 //
 // Parameters:
-//   - handler: The base handler to wrap the middleware
+//   - handler: The base handler to wrap with middleware
 //
 // Returns:
 //   - http.Handler: Handler wrapped with all registered middleware
@@ -128,8 +129,8 @@ func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
 
 	result := handler
 
-	// Apply middleware in reverse order for correct execution chain
-	for i := len(ms.middlewares) - 1; i >= 0; i-- {
+	// Apply middleware in registration order to make last registered outermost
+	for i := 0; i < len(ms.middlewares); i++ {
 		result = ms.middlewares[i](result)
 	}
 
