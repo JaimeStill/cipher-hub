@@ -1,6 +1,6 @@
 # Cipher Hub - Implementation Style Guide
 
-**Version**: 1.6  
+**Version**: 1.7  
 **Last Updated**: Current Session
 
 This style guide establishes consistent development practices for the Cipher Hub project. All code contributions must adhere to these standards to maintain security, quality, and maintainability.
@@ -168,6 +168,9 @@ type Server struct {
     // Configuration (immutable after creation)
     config ServerConfig
 
+    // Middleware stack for request processing
+    middleware *MiddlewareStack
+
     // HTTP server instance for lifecycle management
     httpServer *http.Server
 
@@ -285,9 +288,13 @@ func (s *Server) Start() error {
         return fmt.Errorf("%s: server already started", ServerErrorPrefix)
     }
 
+    // Apply middleware to root handler
+    finalHandler := s.middleware.Apply(s.rootHandler)
+
     // Create HTTP server with validated configuration
     s.httpServer = &http.Server{
         Addr:         s.config.Address(),
+        Handler:      finalHandler, // Use middleware-wrapped handler
         ReadTimeout:  s.config.ReadTimeout,
         WriteTimeout: s.config.WriteTimeout,
         IdleTimeout:  s.config.IdleTimeout,
@@ -405,6 +412,310 @@ go func() {
     
     // ... server logic ...
 }()
+```
+
+---
+
+## Middleware Architecture Patterns
+
+### Industry-Standard Middleware Pattern
+```go
+import (
+    "net/http"
+)
+
+// Middleware defines the standard middleware function signature.
+// A middleware function takes an http.Handler and returns an http.Handler,
+// allowing for request/response processing before and after the wrapped handler.
+//
+// Example usage:
+//
+//	func LoggingMiddleware(next http.Handler) http.Handler {
+//		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+//			log.Printf("Request: %s %s", r.Method, r.URL.Path)
+//			next.ServeHTTP(w, r)
+//		})
+//	}
+type Middleware func(http.Handler) http.Handler
+
+// Enhanced MiddlewareStack with conditional support
+type MiddlewareStack struct {
+    middlewares []Middleware
+}
+
+func NewMiddlewareStack() *MiddlewareStack {
+    return &MiddlewareStack{
+        middlewares: make([]Middleware, 0),
+    }
+}
+
+// Use adds middleware that will always be applied
+func (ms *MiddlewareStack) Use(middleware Middleware) *MiddlewareStack {
+    ms.middlewares = append(ms.middlewares, middleware)
+    return ms
+}
+
+// UseIf conditionally adds middleware based on the provided condition
+func (ms *MiddlewareStack) UseIf(condition bool, middleware Middleware) *MiddlewareStack {
+    if condition {
+        ms.middlewares = append(ms.middlewares, middleware)
+    }
+    return ms
+}
+
+// Apply wraps the provided handler with all registered middleware functions.
+// Middleware is applied in registration order to achieve reverse execution order
+// (last registered becomes outermost).
+func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
+    if handler == nil {
+        handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            http.NotFound(w, r)
+        })
+    }
+
+    result := handler
+    
+    // Apply middleware in registration order to make last registered outermost
+    for i := 0; i < len(ms.middlewares); i++ {
+        result = ms.middlewares[i](result)
+    }
+    
+    return result
+}
+```
+
+### Conditional Middleware Patterns
+```go
+// Environment-based middleware configuration
+func setupMiddleware(server *Server, config AppConfig) {
+    server.Middleware().
+        Use(RequestIDMiddleware()).              // Always generate request IDs
+        Use(RequestLoggingMiddleware()).         // Always log requests
+        UseIf(config.EnableCORS, CORSMiddleware(config.CORSOrigins)). // Environment-specific CORS
+        UseIf(config.IsProduction, HSTSMiddleware()).                 // HSTS only in production
+        UseIf(config.EnableAuth, AuthMiddleware()).                   // Auth when enabled
+        Use(SecurityHeadersMiddleware())         // Always apply security headers
+}
+
+// Correct: Environment-configurable CORS middleware
+func CORSMiddleware(origins []string) Middleware {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            if len(origins) > 0 {
+                w.Header().Set("Access-Control-Allow-Origin", strings.Join(origins, ","))
+                w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+                w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            }
+            
+            // Handle preflight requests
+            if r.Method == "OPTIONS" {
+                w.WriteHeader(http.StatusOK)
+                return
+            }
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+// Incorrect: Hard-coded CORS origins
+func CORSMiddleware() Middleware {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000") // Hard-coded
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+```
+
+### Request Logging Middleware Pattern
+```go
+import (
+    "context"
+    "crypto/rand"
+    "encoding/hex"
+    "fmt"
+    "log/slog"
+    "net/http"
+    "time"
+)
+
+// Secure request ID generation
+func generateRequestID() (string, error) {
+    bytes := make([]byte, 8)
+    if _, err := rand.Read(bytes); err != nil {
+        return "", fmt.Errorf("failed to generate request ID: %w", err)
+    }
+    return hex.EncodeToString(bytes), nil
+}
+
+// Request logging middleware with structured logging
+func RequestLoggingMiddleware() Middleware {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            start := time.Now()
+            
+            // Generate secure request ID
+            requestID, err := generateRequestID()
+            if err != nil {
+                slog.Error("Failed to generate request ID", "error", err)
+                http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+                return
+            }
+            
+            // Add request ID to context
+            ctx := context.WithValue(r.Context(), requestIDCtxKey, requestID)
+            r = r.WithContext(ctx)
+            
+            // Add request ID to response headers
+            w.Header().Set("X-Request-ID", requestID)
+            
+            // Log request start
+            slog.Info("Request started",
+                "request_id", requestID,
+                "method", r.Method,
+                "path", r.URL.Path,
+                "remote_addr", r.RemoteAddr,
+                "user_agent", r.UserAgent())
+            
+            // Wrap ResponseWriter to capture status code
+            wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+            
+            // Call next handler
+            next.ServeHTTP(wrapped, r)
+            
+            // Log request completion
+            duration := time.Since(start)
+            slog.Info("Request completed",
+                "request_id", requestID,
+                "method", r.Method,
+                "path", r.URL.Path,
+                "status_code", wrapped.statusCode,
+                "duration_ms", duration.Milliseconds(),
+                "bytes_written", wrapped.bytesWritten)
+        })
+    }
+}
+
+// ResponseWriter wrapper to capture status code and bytes written
+type responseWriter struct {
+    http.ResponseWriter
+    statusCode   int
+    bytesWritten int64
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+    rw.statusCode = code
+    rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+    n, err := rw.ResponseWriter.Write(b)
+    rw.bytesWritten += int64(n)
+    return n, err
+}
+```
+
+### Security Headers Middleware Pattern
+```go
+// Security headers middleware with conditional HSTS
+func SecurityHeadersMiddleware(isHTTPS bool) Middleware {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Always apply these security headers
+            w.Header().Set("X-Content-Type-Options", "nosniff")
+            w.Header().Set("X-Frame-Options", "DENY")
+            w.Header().Set("X-XSS-Protection", "1; mode=block")
+            w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+            
+            // Content Security Policy
+            w.Header().Set("Content-Security-Policy", 
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
+            
+            // Apply HSTS only for HTTPS
+            if isHTTPS {
+                w.Header().Set("Strict-Transport-Security", 
+                    "max-age=31536000; includeSubDomains; preload")
+            }
+            
+            next.ServeHTTP(w, r)
+        })
+    }
+}
+
+// Usage with conditional application
+server.Middleware().
+    UseIf(config.IsHTTPS, SecurityHeadersMiddleware(true)).
+    UseIf(!config.IsHTTPS, SecurityHeadersMiddleware(false))
+```
+
+### Server Integration Pattern
+```go
+// Server struct with middleware integration
+type Server struct {
+    // Configuration
+    config ServerConfig
+
+    // Middleware stack for request processing
+    middleware *MiddlewareStack
+
+    // HTTP server instance for lifecycle management
+    httpServer *http.Server
+
+    // Root handler for middleware application
+    rootHandler http.Handler
+
+    // ... other fields
+}
+
+// NewServer with middleware initialization
+func NewServer(config ServerConfig) (*Server, error) {
+    // ... configuration validation ...
+
+    server := &Server{
+        config: config,
+
+        // Initialize middleware stack
+        middleware: NewMiddlewareStack(),
+
+        // Root handler (will be set by user or default to NotFound)
+        rootHandler: nil,
+
+        // ... other field initialization
+    }
+
+    return server, nil
+}
+
+// Middleware accessor for configuration
+func (s *Server) Middleware() *MiddlewareStack {
+    return s.middleware
+}
+
+// SetHandler for root handler management
+func (s *Server) SetHandler(handler http.Handler) {
+    s.rootHandler = handler
+}
+
+// Start method with middleware application
+func (s *Server) Start() error {
+    // ... state checks ...
+
+    // Apply middleware to root handler
+    finalHandler := s.middleware.Apply(s.rootHandler)
+
+    // Create HTTP server with middleware-wrapped handler
+    s.httpServer = &http.Server{
+        Addr:         s.config.Address(),
+        Handler:      finalHandler, // Middleware applied here
+        ReadTimeout:  s.config.ReadTimeout,
+        WriteTimeout: s.config.WriteTimeout,
+        IdleTimeout:  s.config.IdleTimeout,
+    }
+
+    // ... continue with server start logic
+}
 ```
 
 ---
@@ -898,6 +1209,7 @@ func NewServerFromEnv() (*Server, error) {
 - **Security Tests**: Test malicious input and injection attempts
 - **Thread Safety Tests**: Test concurrent access patterns where applicable
 - **Shutdown Tests**: Test graceful shutdown scenarios and resource cleanup
+- **Middleware Tests**: Test middleware composition, execution order, and conditional application
 
 ### Security-Focused Testing Patterns
 ```go
@@ -970,6 +1282,141 @@ func TestServerConfig_Validate(t *testing.T) {
                 if err != nil {
                     t.Errorf("Validate() unexpected error: %v", err)
                 }
+            }
+        })
+    }
+}
+```
+
+### Middleware Testing Patterns
+```go
+func TestMiddlewareStack_Apply_Order(t *testing.T) {
+    stack := NewMiddlewareStack()
+
+    var executionOrder []string
+
+    // Add middleware that tracks execution order
+    middleware1 := func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            executionOrder = append(executionOrder, "middleware1-before")
+            next.ServeHTTP(w, r)
+            executionOrder = append(executionOrder, "middleware1-after")
+        })
+    }
+
+    middleware2 := func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            executionOrder = append(executionOrder, "middleware2-before")
+            next.ServeHTTP(w, r)
+            executionOrder = append(executionOrder, "middleware2-after")
+        })
+    }
+
+    middleware3 := func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            executionOrder = append(executionOrder, "middleware3-before")
+            next.ServeHTTP(w, r)
+            executionOrder = append(executionOrder, "middleware3-after")
+        })
+    }
+
+    // Add middleware in order
+    stack.Use(middleware1).Use(middleware2).Use(middleware3)
+
+    handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        executionOrder = append(executionOrder, "handler")
+        w.WriteHeader(http.StatusOK)
+    })
+
+    finalHandler := stack.Apply(handler)
+
+    req := httptest.NewRequest("GET", "/test", nil)
+    w := httptest.NewRecorder()
+
+    finalHandler.ServeHTTP(w, req)
+
+    // Verify execution order: last registered middleware executes first
+    expectedOrder := []string{
+        "middleware3-before", // Last registered, outermost
+        "middleware2-before",
+        "middleware1-before", // First registered, innermost
+        "handler",
+        "middleware1-after",  // First registered, innermost
+        "middleware2-after",
+        "middleware3-after",  // Last registered, outermost
+    }
+
+    if len(executionOrder) != len(expectedOrder) {
+        t.Fatalf("Expected %d execution steps, got %d", len(expectedOrder), len(executionOrder))
+    }
+
+    for i, expected := range expectedOrder {
+        if executionOrder[i] != expected {
+            t.Errorf("Execution order[%d]: expected %q, got %q", i, expected, executionOrder[i])
+        }
+    }
+}
+
+func TestMiddlewareStack_UseIf(t *testing.T) {
+    tests := []struct {
+        name           string
+        condition      bool
+        expectedCount  int
+        expectHeader   bool
+    }{
+        {
+            name:          "condition true",
+            condition:     true,
+            expectedCount: 1,
+            expectHeader:  true,
+        },
+        {
+            name:          "condition false",
+            condition:     false,
+            expectedCount: 0,
+            expectHeader:  false,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            stack := NewMiddlewareStack()
+
+            middleware := func(next http.Handler) http.Handler {
+                return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                    w.Header().Set("X-Conditional", "applied")
+                    next.ServeHTTP(w, r)
+                })
+            }
+
+            // Test conditional addition
+            result := stack.UseIf(tt.condition, middleware)
+
+            // Verify chaining
+            if result != stack {
+                t.Error("UseIf() should return same instance for chaining")
+            }
+
+            // Verify count
+            if stack.Count() != tt.expectedCount {
+                t.Errorf("Expected %d middleware, got %d", tt.expectedCount, stack.Count())
+            }
+
+            // Test application
+            handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                w.WriteHeader(http.StatusOK)
+            })
+
+            finalHandler := stack.Apply(handler)
+            req := httptest.NewRequest("GET", "/test", nil)
+            w := httptest.NewRecorder()
+
+            finalHandler.ServeHTTP(w, req)
+
+            // Verify header presence
+            hasHeader := w.Header().Get("X-Conditional") == "applied"
+            if hasHeader != tt.expectHeader {
+                t.Errorf("Expected header present: %v, got: %v", tt.expectHeader, hasHeader)
             }
         })
     }
@@ -1229,6 +1676,11 @@ func TestNewServer(t *testing.T) {
                 return
             }
 
+            // Verify middleware stack is initialized
+            if server.Middleware() == nil {
+                t.Error("Server middleware stack should be initialized")
+            }
+
             // Verify defaults were applied
             config := server.Config()
             if tt.config.ReadTimeout == 0 && config.ReadTimeout != DefaultReadTimeout {
@@ -1284,38 +1736,6 @@ func TestHealthEndpoint(t *testing.T) {
 ---
 
 ## HTTP Server Architecture Patterns
-
-### Middleware Design Pattern
-```go
-// Enhanced middleware stack with conditional support
-type MiddlewareStack struct {
-    middlewares []Middleware
-}
-
-func NewMiddlewareStack() *MiddlewareStack {
-    return &MiddlewareStack{}
-}
-
-func (ms *MiddlewareStack) Use(middleware Middleware) *MiddlewareStack {
-    ms.middlewares = append(ms.middlewares, middleware)
-    return ms
-}
-
-func (ms *MiddlewareStack) UseIf(condition bool, middleware Middleware) *MiddlewareStack {
-    if condition {
-        ms.middlewares = append(ms.middlewares, middleware)
-    }
-    return ms
-}
-
-func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
-    result := handler
-    for i := len(ms.middlewares) - 1; i >= 0; i-- {
-        result = ms.middlewares[i](result)
-    }
-    return result
-}
-```
 
 ### Health Check Interface Pattern
 ```go
@@ -1483,19 +1903,21 @@ func getErrorCode(status int) string {
 // It validates the configuration, applies secure defaults, and prepares the server
 // for lifecycle management with proper shutdown coordination.
 //
+// The server includes an initialized middleware stack ready for middleware
+// registration and a root handler management system for request processing.
+//
 // Parameters:
 //   - config: ServerConfig containing host, port, and timeout configuration
 //
 // Returns:
-//   - *Server: Configured server instance ready for Start()
+//   - *Server: Configured server instance ready for middleware and handler setup
 //   - error: Validation error if configuration is invalid
 //
 // Security: Applies secure timeout defaults and validates all configuration parameters.
 // The server is prepared but not started; call Start() to begin accepting connections.
 //
-// Context Pattern: Uses WithCancel for shutdown coordination rather than WithTimeout.
-// This separates coordination signaling from shutdown operation timeout, allowing
-// the actual shutdown timeout to be applied directly in the Shutdown() method.
+// Middleware Pattern: The server includes a MiddlewareStack accessible via Middleware()
+// method for adding request processing middleware before starting the server.
 func NewServer(config ServerConfig) (*Server, error) {
     // ... implementation
 }
@@ -1506,15 +1928,21 @@ func NewServer(config ServerConfig) (*Server, error) {
 // Package server provides HTTP server infrastructure for Cipher Hub.
 //
 // This package implements the core HTTP server functionality with structured
-// configuration management, graceful shutdown capabilities, and security-first
-// design principles.
+// configuration management, graceful shutdown capabilities, middleware support,
+// and security-first design principles.
 //
-// Key Security Features:
+// Key Features:
+//   - Production-ready HTTP server lifecycle with graceful shutdown
+//   - Industry-standard middleware infrastructure with conditional support
 //   - Comprehensive input validation with injection prevention
-//   - Configurable timeouts with security bounds
-//   - Context-based lifecycle management
-//   - Environment-configurable CORS origins
-//   - Graceful shutdown with signal handling
+//   - Context-based shutdown coordination and timeout management
+//   - Thread-safe concurrent access patterns
+//
+// Middleware Infrastructure:
+//   - Standard middleware signature: func(http.Handler) http.Handler
+//   - Enhanced middleware stack with conditional application (UseIf)
+//   - Method chaining for fluent API design
+//   - Correct execution order (last registered becomes outermost)
 //
 // Container Integration:
 //   - SIGINT and SIGTERM signal handling for orchestration platforms
@@ -1533,7 +1961,13 @@ func NewServer(config ServerConfig) (*Server, error) {
 //		log.Fatal(err)
 //	}
 //	
-//	// Start server
+//	// Configure middleware
+//	server.Middleware().
+//		Use(RequestLoggingMiddleware()).
+//		UseIf(config.EnableCORS, CORSMiddleware(config.CORSOrigins))
+//	
+//	// Set handler and start server
+//	server.SetHandler(myHandler)
 //	go server.Start()
 //	
 //	// Handle graceful shutdown
@@ -1561,10 +1995,12 @@ cipher-hub/
 ├── internal/
 │   ├── models/              # Core data models (Phase 1 ✅)
 │   ├── storage/             # Storage interface (Phase 1 ✅)  
-│   ├── server/              # HTTP server infrastructure (Phase 2 → Target 2.1 → Task 2.1.1 ✅)
+│   ├── server/              # HTTP server infrastructure (Phase 2 → Target 2.1 ✅)
 │   │   ├── server.go        # Complete HTTP server with graceful shutdown (✅)
-│   │   └── server_test.go   # Comprehensive security and lifecycle testing (✅)
-│   └── handlers/            # HTTP request handlers (Phase 2 → Target 2.1 → Task 2.1.2 📋)
+│   │   ├── server_test.go   # Comprehensive security and lifecycle testing (✅)
+│   │   ├── middleware.go    # Complete middleware infrastructure (✅)
+│   │   └── middleware_test.go # Comprehensive middleware testing (✅)
+│   └── handlers/            # HTTP request handlers (Phase 2 → Target 2.1 📋)
 ├── checkpoint.md           # Development progress and next steps
 ├── go.mod                  # Go module definition
 ├── readme.md               # Project homepage and documentation
@@ -1596,6 +2032,7 @@ cipher-hub/
 - [ ] Thread-safe operations preventing race conditions
 - [ ] Graceful shutdown with proper resource cleanup
 - [ ] Signal handling without race conditions
+- [ ] Middleware security patterns with nil handler protection
 
 ### Key Material Protection Standards
 - [ ] Use `json:"-"` tags on all key material fields
@@ -1624,6 +2061,15 @@ cipher-hub/
 - [ ] Graceful shutdown with timeout enforcement
 - [ ] Signal handling with proper coordination and cleanup
 
+### Middleware Security Requirements
+- [ ] Industry-standard middleware signature implemented
+- [ ] Nil handler protection preventing runtime errors
+- [ ] Correct middleware execution order ensuring standard composition
+- [ ] Conditional middleware deployment maintains security posture
+- [ ] Method chaining provides secure configuration patterns
+- [ ] Server integration maintains thread safety during setup
+- [ ] Comprehensive testing covers security scenarios and edge cases
+
 ### Shutdown Security Requirements
 - [ ] In-flight requests complete within timeout bounds
 - [ ] Resource cleanup handles all failure scenarios
@@ -1635,6 +2081,6 @@ cipher-hub/
 
 ---
 
-*Implementation Style Guide Version: 1.6*  
+*Implementation Style Guide Version: 1.7*  
 *Last Updated: Current Session*  
-*Focus: Security-first implementation patterns with complete HTTP server lifecycle, graceful shutdown, and signal handling for Task 2.1.1 completion*
+*Focus: Security-first implementation patterns with complete HTTP server lifecycle, middleware infrastructure, and graceful shutdown for Step 2.1.2.1 completion*
