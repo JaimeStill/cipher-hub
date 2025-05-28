@@ -1,6 +1,6 @@
 # Cipher Hub - Technical Specification
 
-**Version**: 1.7  
+**Version**: 1.8  
 **Last Updated**: Current Session
 
 ---
@@ -87,11 +87,20 @@ The system manages service registrations as logical containers for related parti
 
 **Production-Ready Server Lifecycle**: Complete HTTP server implementation with robust lifecycle management:
 - **Start() Method**: Creates `http.Server` instance with validated configuration and proper listener setup
+- **Graceful Shutdown**: Complete implementation with `http.Server.Shutdown()` coordination
+- **Signal Handling**: SIGINT and SIGTERM support for container orchestration platforms
 - **Thread Safety**: Production-ready concurrent access patterns using `sync.RWMutex`
 - **Resource Management**: Proper cleanup on startup failure with listener lifecycle coordination
 - **State Management**: Reliable server state tracking with atomic updates
 - **Channel-Based Coordination**: Reliable server readiness detection instead of arbitrary delays
 - **Error Handling**: Comprehensive error coverage with secure information handling
+
+**Enhanced Shutdown Architecture**: Complete graceful termination capabilities:
+- **In-Flight Request Completion**: Active requests complete within configured timeout bounds
+- **Resource Cleanup**: Proper cleanup of listeners, connections, and server instances
+- **Signal Coordination**: Production-ready signal handling with timeout management
+- **Context Resolution**: Separation of coordination context from operation timeout
+- **Error Propagation**: Comprehensive error reporting with timeout context
 
 **Structured Configuration Pattern**: `ServerConfig` approach with comprehensive validation, secure defaults, and environment variable integration. The pattern provides:
 - Security-conscious input validation with injection attack prevention (hostname, port, timeout validation)
@@ -123,6 +132,12 @@ Built specifically for containerized environments with comprehensive support for
 **Health Check Integration**: Readiness and liveness endpoints for container health monitoring with service dependency checks and deep health validation.
 
 **Graceful Shutdown**: Proper resource cleanup procedures with connection draining, in-flight request completion, and secure memory clearing.
+
+**Signal Handling**: Production-ready signal processing for container orchestration:
+- **SIGINT**: Interactive shutdown (Ctrl+C) with graceful termination
+- **SIGTERM**: Container orchestration shutdown signal
+- **Timeout Coordination**: Prevents coordination issues between signal handling and server shutdown
+- **Resource Cleanup**: Ensures proper cleanup even on shutdown failure
 
 ### Go Standard Library Foundation
 
@@ -351,28 +366,32 @@ Leverages Go's robust standard library extensively to minimize external dependen
 - Security-first design with key material protection
 - Comprehensive test coverage with table-driven patterns
 
-**Phase 2.1: HTTP Server Infrastructure** - Production-ready server lifecycle management
+**Phase 2 → Target 2.1 → Task 2.1.1: HTTP Server Creation** - Complete server lifecycle with graceful shutdown
 - Complete `ServerConfig` with structured validation and environment loading foundation
 - Full HTTP server implementation with `Start()` method and proper lifecycle management
 - Thread safety with `sync.RWMutex` for production concurrent access patterns
 - Enhanced port validation supporting both explicit and dynamic assignment
 - Comprehensive test coverage including security, thread safety, and lifecycle scenarios
-- Channel-based coordination for reliable server startup detection
+- **NEW**: Complete graceful shutdown with HTTP server coordination
+- **NEW**: Signal handling for SIGINT and SIGTERM container orchestration support
+- **NEW**: Resource cleanup and state management on shutdown failure
+- **NEW**: Context pattern resolution for cleaner shutdown semantics
+- **NEW**: In-flight request completion before termination
 
 ### Current Development Focus ⏳
 
-**Step 2.1.1.3: Graceful Shutdown Implementation**
-- Enhance `Shutdown()` method with HTTP server coordination
-- Signal handling for SIGINT and SIGTERM graceful termination
-- In-flight request completion before shutdown using configured timeout
-- Complete server lifecycle management with proper resource cleanup
+**Phase 2 → Target 2.1 → Task 2.1.2 → Step 2.1.2.1: Middleware Function Signature Pattern**
+- Define `Middleware` type as `func(http.Handler) http.Handler`
+- Create enhanced middleware stack with conditional support
+- Implement middleware application pattern with proper chaining
+- Foundation integration with complete HTTP server lifecycle
 
 ### Next Development Phases 📋
 
-**Phase 2.1 Completion**: Middleware infrastructure, health checks, and handler framework
-**Phase 2.2**: API foundation with service registration and participant endpoints
-**Phase 3**: Security foundation with authentication and authorization
-**Phase 4**: Key lifecycle management with generation and distribution
+**Target 2.1 Continuation**: Middleware infrastructure, health checks, and handler framework  
+**Target 2.2**: API foundation with service registration and participant endpoints  
+**Phase 3**: Security foundation with authentication and authorization  
+**Phase 4**: Key lifecycle management with generation and distribution  
 **Phase 5**: Production readiness with persistent storage and monitoring
 
 > **Implementation Reference**: For detailed implementation patterns, code examples, and development standards, 
@@ -381,6 +400,6 @@ Leverages Go's robust standard library extensively to minimize external dependen
 
 ---
 
-*Technical Specification Version: 1.7*  
-*Architecture Status: HTTP Server Infrastructure Complete, Graceful Shutdown Implementation Next*  
-*Implementation Quality: Production-ready server lifecycle with comprehensive security and thread safety*
+*Technical Specification Version: 1.8*  
+*Architecture Status: Task 2.1.1 HTTP Server Creation Complete → Task 2.1.2 Middleware Infrastructure Next*  
+*Implementation Quality: Production-ready server lifecycle with comprehensive signal handling and container orchestration support*

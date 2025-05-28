@@ -2,21 +2,28 @@
 
 **Cipher Hub** is a comprehensive, containerized key management service built in Go that serves as a centralized security layer for cryptographic operations across distributed systems. Designed as a sidecar component, it handles the complete lifecycle of encryption keys while providing standardized REST APIs for key operations, abstracting away cryptographic complexity from application services.
 
-## Project Status: HTTP Server Infrastructure Complete ✅
+## Project Status: Task 2.1.1 HTTP Server Creation Complete ✅
 
-**Current Development**: Step 2.1.1.2 Complete ✅ → Step 2.1.1.3 Next ⏳  
-**Architecture Foundation**: Production-ready HTTP server with lifecycle management and thread safety  
+**Current Development**: Task 2.1.1 Complete ✅ → Task 2.1.2 Current ⏳ → Step 2.1.2.1 Next ⏳  
+**Architecture Foundation**: Production-ready HTTP server with graceful shutdown and signal handling  
 **Go Version**: 1.24+ with enhanced routing patterns and standard library focus
 
 ### Development Progress Highlights
 
 - **✅ Phase 1**: Foundation architecture with comprehensive data models and storage interface
-- **🔄 Phase 2.1**: HTTP server infrastructure with lifecycle management and thread safety
-  - **✅ Step 2.1.1.1**: HTTP server configuration structure with security-first validation
-  - **✅ Step 2.1.1.2**: HTTP server lifecycle management with Start() method and thread safety
-  - **⏳ Step 2.1.1.3**: Graceful shutdown mechanism with signal handling (immediate next)
-- **📋 Phase 2.2**: API foundation with service registration and participant endpoints
-- **🔐 Phase 3**: Authentication and authorization framework with API key management
+- **🔄 Phase 2**: HTTP server infrastructure implementation
+  - **⏳ Target 2.1**: Basic Server Setup (Task 2.1.1 Complete → Task 2.1.2 Current)
+    - **✅ Task 2.1.1**: HTTP Server Creation (COMPLETE ✅)
+      - **✅ Step 2.1.1.1**: HTTP server configuration structure with security-first validation
+      - **✅ Step 2.1.1.2**: HTTP server lifecycle management with Start() method and thread safety
+      - **✅ Step 2.1.1.3**: Graceful shutdown mechanism with signal handling (COMPLETE ✅)
+    - **⏳ Task 2.1.2**: Middleware Infrastructure (CURRENT TASK ⏳)
+      - **⏳ Step 2.1.2.1**: Middleware function signature pattern (IMMEDIATE NEXT ⏳)
+    - **📋 Task 2.1.3**: Health Check System
+    - **📋 Task 2.1.4**: Handler Framework
+  - **📋 Target 2.2**: API foundation with service registration and participant endpoints
+  - **📋 Target 2.3**: Initial Integration
+- **📋 Phase 3**: Authentication and authorization framework with API key management
 - **🔑 Phase 4**: Key generation and lifecycle management with rotation capabilities
 - **🏗️ Phase 5**: Production readiness with persistent storage and monitoring
 - **🚀 Phase 6**: Advanced security features and high availability
@@ -38,8 +45,11 @@ cd cipher-hub
 go mod tidy
 go test ./...
 
-# Run the service (HTTP server infrastructure ready, handlers in development)
+# Run the service (complete HTTP server with graceful shutdown)
 go run cmd/cipher-hub/main.go
+
+# Test graceful shutdown
+# Press Ctrl+C or send SIGTERM for graceful termination
 ```
 
 ### Development
@@ -58,11 +68,11 @@ go mod tidy
 ```
 
 #### Current Development Focus
-**Step 2.1.1.3**: Implementing graceful shutdown mechanism with signal handling
-- Enhanced `Shutdown()` method with HTTP server coordination
-- Signal handling for SIGINT and SIGTERM graceful termination
-- In-flight request completion before shutdown using configured timeout
-- Complete server lifecycle management with proper resource cleanup
+**Phase 2 → Target 2.1 → Task 2.1.2 → Step 2.1.2.1**: Implementing middleware function signature pattern
+- Define `Middleware` type as `func(http.Handler) http.Handler`
+- Create enhanced middleware stack with conditional support
+- Implement middleware application pattern with proper chaining
+- Leverage completed HTTP server lifecycle for middleware execution
 
 ## Core Documents
 
@@ -82,12 +92,12 @@ The project documentation is organized into focused documents, each serving a sp
 
 ```
 cipher-hub/
-├── cmd/cipher-hub/           # Application entry point
+├── cmd/cipher-hub/           # Application entry point with signal handling
 ├── internal/
 │   ├── models/              # Core data models (Phase 1 ✅)
 │   ├── storage/             # Storage interface (Phase 1 ✅)  
 │   ├── server/              # HTTP server infrastructure (Phase 2.1 ✅)
-│   │   ├── server.go        # Complete HTTP server with lifecycle management (✅)
+│   │   ├── server.go        # Complete HTTP server with graceful shutdown (✅)
 │   │   └── server_test.go   # Comprehensive security and lifecycle testing (✅)
 │   └── handlers/            # HTTP request handlers (Phase 2.1 📋)
 ├── checkpoint.md           # Development progress and next steps
@@ -101,7 +111,7 @@ cipher-hub/
 
 ## Implemented Features
 
-### 🏗️ HTTP Server Infrastructure (Phase 2.1 - Nearly Complete)
+### 🏗️ HTTP Server Infrastructure (Phase 2 → Target 2.1 → Task 2.1.1 Complete ✅)
 - **✅ ServerConfig Architecture**: Structured configuration with comprehensive validation
 - **✅ Security-First Validation**: Input sanitization preventing injection attacks
 - **✅ Timeout Management**: Configurable timeouts with security bounds (1s-5min)
@@ -109,7 +119,10 @@ cipher-hub/
 - **✅ HTTP Server Lifecycle**: Complete Start() method with thread safety and resource management
 - **✅ Thread Safety**: Production-ready concurrent access patterns with sync.RWMutex
 - **✅ Enhanced Port Validation**: Support for port "0" dynamic assignment and security bounds
-- **⏳ Graceful Shutdown**: Signal handling and HTTP server coordination (Step 2.1.1.3)
+- **✅ Graceful Shutdown**: Signal handling and HTTP server coordination (COMPLETE ✅)
+- **✅ Signal Handling**: SIGINT and SIGTERM support for container orchestration
+- **✅ Resource Management**: Complete cleanup on shutdown failure with proper error propagation
+- **✅ Context Resolution**: Clear separation between coordination signaling and shutdown timeout
 
 ### 🗄️ Core Data Models (Phase 1 - Complete)
 - **Service Registration**: Logical containers for related participants with metadata extensibility
@@ -123,6 +136,13 @@ cipher-hub/
 - **Error Handling**: Structured error responses without information leakage
 - **Audit-Ready Logging**: Comprehensive logging without sensitive data exposure
 - **Thread Safety**: Production-ready concurrency patterns preventing race conditions
+
+### 🚀 Container-Native Features (Phase 2 → Target 2.1 → Task 2.1.1 Complete ✅)
+- **Signal Handling**: SIGINT and SIGTERM graceful shutdown for container orchestration
+- **Graceful Termination**: In-flight request completion within configured timeout
+- **Resource Cleanup**: Proper cleanup of listeners, connections, and server instances
+- **Health Check Ready**: Foundation prepared for container health monitoring
+- **Environment Configuration**: Ready for environment variable configuration loading
 
 ## Planned Features
 
@@ -174,6 +194,40 @@ All development follows the standards documented in [`style-guide.md`](./style-g
 - **Testing Requirements**: >95% test coverage with security-focused edge cases and table-driven tests
 - **Documentation**: Complete Go doc comments with security considerations for all public APIs
 
+## Production Deployment
+
+### Container Deployment
+Cipher Hub is designed for container-native deployment with production-ready features:
+
+```bash
+# Build the application
+go build -o cipher-hub cmd/cipher-hub/main.go
+
+# Run with environment configuration
+CIPHER_HUB_HOST=0.0.0.0 \
+CIPHER_HUB_PORT=8080 \
+CIPHER_HUB_SHUTDOWN_TIMEOUT=30s \
+./cipher-hub
+```
+
+### Signal Handling
+The service properly handles container orchestration signals:
+- **SIGINT (Ctrl+C)**: Initiates graceful shutdown with configured timeout
+- **SIGTERM**: Container orchestration graceful shutdown signal
+- **Graceful Termination**: In-flight requests complete before shutdown
+
+### Health Check Integration
+Ready for container orchestration health monitoring:
+```yaml
+# Kubernetes liveness probe (ready for implementation)
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 30
+```
+
 ## Related Projects
 
 - **Cipher Flux**: Secure data transfer service (follow-on project once **Cipher Hub** is complete)
@@ -181,4 +235,4 @@ All development follows the standards documented in [`style-guide.md`](./style-g
 ---
 
 **Built with ❤️ using Go standard library and security-first principles**  
-*Current Focus: Graceful shutdown implementation completing HTTP server infrastructure*
+*Current Focus: Task 2.1.2 Middleware Infrastructure building on completed Task 2.1.1 HTTP Server Creation*
