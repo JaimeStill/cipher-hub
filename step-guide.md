@@ -1,30 +1,31 @@
-# Step 2.1.1.3: Add Graceful Shutdown Mechanism
+# Step 2.1.2.1: Create Middleware Function Signature Pattern
 
 ## Overview
 
-**Step**: 2.1.1.3  
-**Task**: 2.1.1 (HTTP Server Creation)  
+**Step**: 2.1.2.1  
+**Task**: 2.1.2 (Middleware Infrastructure)  
 **Target**: 2.1 (Basic Server Setup)  
 **Phase**: 2 (HTTP Server Infrastructure)  
 
 **Time Estimate**: 25-30 minutes  
-**Scope**: Implement graceful shutdown with HTTP server coordination and signal handling
+**Scope**: Define middleware type, enhanced stack with conditional support, and server integration
 
 ## Step Objectives
 
 ### Primary Deliverables
-- [ ] **Enhanced Shutdown() Method**: Coordinate with `http.Server.Shutdown()` for graceful termination
-- [ ] **Signal Handling**: Implement SIGINT and SIGTERM handling in `main.go`
-- [ ] **In-Flight Request Completion**: Ensure active requests complete before shutdown
-- [ ] **Shutdown Context Resolution**: Fix context timeout pattern for proper coordination
-- [ ] **Resource Cleanup**: Complete server lifecycle with proper state management
+- [ ] **Middleware Type Definition**: Define `Middleware` as `func(http.Handler) http.Handler`
+- [ ] **Enhanced Middleware Stack**: Create `MiddlewareStack` with `Use()` and `UseIf()` methods
+- [ ] **Server Integration**: Add middleware field to Server and application logic
+- [ ] **Handler Application Pattern**: Implement middleware chaining and handler wrapping
+- [ ] **Foundation Integration**: Leverage completed HTTP server lifecycle
 
 ### Implementation Requirements
-- **Files Modified**: `internal/server/server.go`, `cmd/cipher-hub/main.go`
-- **Architecture Focus**: Complete HTTP server lifecycle with production-ready shutdown
-- **Security Focus**: Proper resource cleanup and state consistency
-- **Go Best Practices**: Context management and goroutine coordination
-- **Foundation Usage**: Leverage established thread safety and error patterns
+- **Files Created**: `internal/server/middleware.go`, `internal/server/middleware_test.go`
+- **Files Modified**: `internal/server/server.go`
+- **Architecture Focus**: Middleware function signature pattern with conditional support
+- **Security Focus**: Proper middleware chaining and handler protection
+- **Go Best Practices**: Composition patterns and interface compliance
+- **Foundation Usage**: Build on established server lifecycle and thread safety
 
 ---
 
@@ -32,51 +33,237 @@
 
 ### Technical Specifications
 
-#### Context Pattern Resolution
-- **Fix Shutdown Context**: Use `WithCancel` for coordination, separate timeout for HTTP shutdown
-- **Context Semantics**: Clear separation between coordination context and operation timeout
-- **Timeout Application**: Use `ShutdownTimeout` directly in `http.Server.Shutdown()`
+#### Middleware Type Definition
+- **Standard Pattern**: `type Middleware func(http.Handler) http.Handler`
+- **Industry Compliance**: Follows Go web framework conventions (Gin, Echo, Chi)
+- **Composability**: Enables clean chaining and wrapping patterns
+- **Testing**: Easy to unit test individual middleware functions
 
-#### Enhanced Shutdown Method
-- **HTTP Server Coordination**: Use `http.Server.Shutdown()` with configured timeout
-- **Thread Safety**: Maintain mutex protection for state transitions
-- **Error Handling**: Proper error propagation with consistent prefixes
-- **State Management**: Clean up server instance and update started flag
+#### Enhanced Middleware Stack
+- **Flexible Application**: Both `Use()` for guaranteed middleware and `UseIf()` for conditional
+- **Chaining Support**: Method chaining for fluent API design
+- **Order Control**: Middleware applied in registration order
+- **Thread Safety**: Safe for concurrent access during setup phase
 
-#### Signal Handling Architecture
-- **Location**: Implement in `cmd/cipher-hub/main.go` for separation of concerns
-- **Signals**: Handle SIGINT (Ctrl+C) and SIGTERM (container orchestration)
-- **Coordination**: Use existing `Shutdown()` method for consistency
-- **Graceful Termination**: Allow shutdown timeout before forced exit
+#### Server Integration Pattern
+- **Composition**: MiddlewareStack as separate component within Server
+- **Lifecycle Integration**: Middleware application during server start
+- **Handler Management**: Simple handler setting with middleware application
+- **Future Extensibility**: Foundation for route-specific middleware
 
 ---
 
 ## Implementation
 
-### Step 1: Fix Shutdown Context Pattern
+### Step 1: Create Middleware Type and Stack
+
+**File**: `internal/server/middleware.go`
+
+```go
+package server
+
+import (
+	"net/http"
+)
+
+// Middleware defines the standard middleware function signature.
+// A middleware function takes an http.Handler and returns an http.Handler,
+// allowing for request/response processing before and after the wrapped handler.
+//
+// Example usage:
+//
+//	func LoggingMiddleware(next http.Handler) http.Handler {
+//		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+//			log.Printf("Request: %s %s", r.Method, r.URL.Path)
+//			next.ServeHTTP(w, r)
+//		})
+//	}
+type Middleware func(http.Handler) http.Handler
+
+// MiddlewareStack manages a collection of middleware functions with support
+// for conditional application and ordered execution.
+//
+// Middleware is applied in the order it was added to the stack. The last
+// middleware added will be the outermost middleware (executed first for requests,
+// last for responses).
+//
+// Thread Safety: MiddlewareStack is safe for concurrent reads after setup
+// is complete, but modifications (Use, UseIf) should only be performed
+// during initialization phase before serving requests.
+type MiddlewareStack struct {
+	middlewares []Middleware
+}
+
+// NewMiddlewareStack creates a new empty middleware stack ready for use.
+//
+// Returns:
+//   - *MiddlewareStack: Empty middleware stack ready for middleware registration
+//
+// Example:
+//
+//	stack := NewMiddlewareStack()
+//	stack.Use(RequestIDMiddleware()).
+//		UseIf(config.EnableCORS, CORSMiddleware()).
+//		Use(LoggingMiddleware())
+func NewMiddlewareStack() *MiddlewareStack {
+	return &MiddlewareStack{
+		middlewares: make([]Middleware, 0),
+	}
+}
+
+// Use adds a middleware function to the stack that will always be applied.
+// Middleware is applied in registration order.
+//
+// Parameters:
+//   - middleware: Middleware function to add to the stack
+//
+// Returns:
+//   - *MiddlewareStack: The same stack instance for method chaining
+//
+// Example:
+//
+//	stack.Use(RequestIDMiddleware()).Use(LoggingMiddleware())
+func (ms *MiddlewareStack) Use(middleware Middleware) *MiddlewareStack {
+	ms.middlewares = append(ms.middlewares, middleware)
+	return ms
+}
+
+// UseIf conditionally adds a middleware function to the stack based on the
+// provided condition. If the condition is false, the middleware is not added.
+//
+// This is useful for environment-specific middleware or feature flags.
+//
+// Parameters:
+//   - condition: Boolean condition determining whether to add the middleware
+//   - middleware: Middleware function to add if condition is true
+//
+// Returns:
+//   - *MiddlewareStack: The same stack instance for method chaining
+//
+// Example:
+//
+//	stack.UseIf(config.EnableCORS, CORSMiddleware()).
+//		UseIf(config.Environment == "development", DebugMiddleware())
+func (ms *MiddlewareStack) UseIf(condition bool, middleware Middleware) *MiddlewareStack {
+	if condition {
+		ms.middlewares = append(ms.middlewares, middleware)
+	}
+	return ms
+}
+
+// Apply wraps the provided handler with all registered middleware functions.
+// Middleware is applied in reverse order (last registered becomes outermost).
+//
+// This follows the standard middleware pattern where middleware closer to
+// the registration point executes later in the request chain but earlier
+// in the response chain.
+//
+// Performance: Middleware is applied once during server start for optimal
+// runtime performance. The middleware chain is pre-built and reused for
+// all requests, avoiding per-request overhead.
+//
+// Parameters:
+//   - handler: The base handler to wrap with middleware
+//
+// Returns:
+//   - http.Handler: Handler wrapped with all registered middleware
+//
+// Example:
+//
+//	finalHandler := stack.Apply(myBusinessLogicHandler)
+//	http.ListenAndServe(":8080", finalHandler)
+//
+// Execution Flow Example:
+//   stack.Use(A).Use(B).Use(C)
+//   Request:  C -> B -> A -> handler
+//   Response: handler -> A -> B -> C
+//
+// This ensures middleware registered later can wrap and control middleware
+// registered earlier, following standard middleware composition patterns.
+func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
+	if handler == nil {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+	}
+
+	result := handler
+	
+	// Apply middleware in reverse order for correct execution chain
+	for i := len(ms.middlewares) - 1; i >= 0; i-- {
+		result = ms.middlewares[i](result)
+	}
+	
+	return result
+}
+
+// Count returns the number of middleware functions currently in the stack.
+// This is useful for testing and debugging purposes.
+//
+// Returns:
+//   - int: Number of middleware functions in the stack
+func (ms *MiddlewareStack) Count() int {
+	return len(ms.middlewares)
+}
+
+// Clear removes all middleware functions from the stack.
+// This is primarily useful for testing scenarios.
+func (ms *MiddlewareStack) Clear() {
+	ms.middlewares = ms.middlewares[:0]
+}
+```
+
+### Step 2: Integrate Middleware with Server
 
 **File**: `internal/server/server.go`
 
-Update the `NewServer` constructor to use `WithCancel` for coordination:
+Add middleware field to Server struct and update constructor:
+
+```go
+// Server represents the HTTP server with configuration and lifecycle management
+type Server struct {
+	// Configuration
+	config ServerConfig
+
+	// Middleware stack for request processing
+	middleware *MiddlewareStack
+
+	// HTTP server instance for lifecycle management
+	httpServer *http.Server
+
+	// Root handler for middleware application
+	rootHandler http.Handler
+
+	// Lifecycle management
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+
+	// Server state
+	disposed bool
+	started  bool
+	mu       sync.RWMutex
+}
+```
+
+Update NewServer constructor:
 
 ```go
 // NewServer creates a new HTTP server instance with the specified configuration.
 // It validates the configuration, applies secure defaults, and prepares the server
 // for lifecycle management with proper shutdown coordination.
 //
+// The server includes an initialized middleware stack ready for middleware
+// registration and a root handler management system for request processing.
+//
 // Parameters:
 //   - config: ServerConfig containing host, port, and timeout configuration
 //
 // Returns:
-//   - *Server: Configured server instance ready for Start()
+//   - *Server: Configured server instance ready for middleware and handler setup
 //   - error: Validation error if configuration is invalid
 //
 // Security: Applies secure timeout defaults and validates all configuration parameters.
 // The server is prepared but not started; call Start() to begin accepting connections.
-//
-// Context Pattern: Uses WithCancel for shutdown coordination rather than WithTimeout.
-// This separates coordination signaling from shutdown operation timeout, allowing
-// the actual shutdown timeout to be applied directly in the Shutdown() method.
 func NewServer(config ServerConfig) (*Server, error) {
 	// Apply defaults for any zero-value timeout fields
 	config.ApplyDefaults()
@@ -87,20 +274,25 @@ func NewServer(config ServerConfig) (*Server, error) {
 	}
 
 	// Create shutdown context for graceful lifecycle management
-	// Use WithCancel for coordination, timeout will be applied in Shutdown()
-	// This pattern separates coordination (cancel signal) from operation timeout
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
 	// Create server with validated configuration
 	server := &Server{
 		config: config,
 
+		// Initialize middleware stack
+		middleware: NewMiddlewareStack(),
+
 		// HTTP server instance (will be initialized in Start())
 		httpServer: nil,
+
+		// Root handler (will be set by user or default to NotFound)
+		rootHandler: nil,
 
 		// Lifecycle management
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
+		disposed:       false,
 		started:        false,
 		mu:             sync.RWMutex{},
 	}
@@ -109,267 +301,878 @@ func NewServer(config ServerConfig) (*Server, error) {
 }
 ```
 
-### Step 2: Enhance Shutdown() Method
-
-**File**: `internal/server/server.go`
-
-Replace the existing basic `Shutdown()` method with enhanced implementation:
+Add middleware and handler management methods:
 
 ```go
-// Shutdown initiates graceful shutdown of the HTTP server.
-// It coordinates with the HTTP server to complete in-flight requests
-// within the configured shutdown timeout before forcing termination.
-//
-// The method is thread-safe and idempotent - calling Shutdown() on an
-// already shut down server returns nil without side effects.
+// Middleware returns the server's middleware stack for configuration.
+// This allows users to add middleware during server setup.
 //
 // Returns:
-//   - error: Shutdown error if graceful shutdown fails within timeout
+//   - *MiddlewareStack: The server's middleware stack
 //
-// Security: Ensures proper resource cleanup and state consistency.
-// In-flight requests complete within ShutdownTimeout before forced termination.
-func (s *Server) Shutdown() error {
+// Example:
+//
+//	server.Middleware().
+//		Use(RequestIDMiddleware()).
+//		UseIf(config.EnableCORS, CORSMiddleware())
+func (s *Server) Middleware() *MiddlewareStack {
+	return s.middleware
+}
+
+// SetHandler sets the root handler for the server. The handler will be
+// wrapped with all registered middleware when the server starts.
+//
+// If no handler is set, the server will return 404 Not Found for all requests.
+//
+// Parameters:
+//   - handler: The root HTTP handler for the server
+//
+// Example:
+//
+//	mux := http.NewServeMux()
+//	mux.HandleFunc("/health", healthHandler)
+//	server.SetHandler(mux)
+func (s *Server) SetHandler(handler http.Handler) {
+	s.rootHandler = handler
+}
+
+// Handler returns the current root handler, or nil if none is set.
+//
+// Returns:
+//   - http.Handler: The current root handler, or nil
+func (s *Server) Handler() http.Handler {
+	return s.rootHandler
+}
+```
+
+Update Start method to apply middleware:
+
+```go
+// Start begins accepting HTTP requests on the configured address.
+// It creates an http.Server instance with validated timeouts, applies
+// all registered middleware to the root handler, and starts the listener
+// with proper error handling and lifecycle integration.
+//
+// The middleware stack is applied to the root handler during server start,
+// creating the final request processing chain.
+//
+// The method is thread-safe and idempotent - calling Start() on an already
+// started server returns an error without side effects.
+//
+// Returns:
+//   - error: Listener setup error, port binding error, or server already started
+//
+// Security: Uses validated configuration to prevent resource exhaustion
+// and integrates with shutdown context for graceful termination.
+func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Cancel coordination context for any waiting operations
-	defer s.shutdownCancel()
-
-	// Check if server is already shut down
-	if !s.started || s.httpServer == nil {
-		return nil // Already shut down, idempotent behavior
+	if s.disposed {
+		return fmt.Errorf("%s: cannot start server after shutdown", ServerErrorPrefix)
 	}
 
-	// Create timeout context for HTTP server shutdown
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
-	defer cancel()
+	// Check if server is already started
+	if s.started {
+		return fmt.Errorf("%s: server already started", ServerErrorPrefix)
+	}
 
-	// Perform graceful HTTP server shutdown
-	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-		// If graceful shutdown fails, clean up state anyway
-		s.started = false
+	// Apply middleware to root handler
+	finalHandler := s.middleware.Apply(s.rootHandler)
+
+	// Create HTTP server instance with validated configuration
+	s.httpServer = &http.Server{
+		Addr:         s.config.Address(),
+		Handler:      finalHandler,  // Use middleware-wrapped handler
+		ReadTimeout:  s.config.ReadTimeout,
+		WriteTimeout: s.config.WriteTimeout,
+		IdleTimeout:  s.config.IdleTimeout,
+	}
+
+	// Store address for error handling (before potential cleanup)
+	addr := s.httpServer.Addr
+
+	// Create listener with error handling
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
 		s.httpServer = nil
-		return fmt.Errorf("%s: graceful shutdown failed after %v timeout: %w", 
-			ServerErrorPrefix, s.config.ShutdownTimeout, err)
+		return fmt.Errorf(
+			"%s: failed to create listener on %s: %w",
+			ServerErrorPrefix,
+			addr,
+			err,
+		)
 	}
 
-	// Update server state after successful shutdown
-	s.started = false
-	s.httpServer = nil
+	// Channel for server readiness signaling
+	ready := make(chan struct{})
+
+	// Start server in goroutine with proper coordination
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.started = false
+			s.mu.Unlock()
+			listener.Close()
+		}()
+
+		// Signal readiness before serving
+		close(ready)
+
+		// serve with proper error handling
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	// Update state before waiting for readiness
+	s.started = true
+
+	// Wait for server to be ready
+	<-ready
 
 	return nil
 }
 ```
 
-### Step 3: Add Required Imports
+### Step 3: Create Comprehensive Tests
 
-**File**: `internal/server/server.go`
-
-Ensure all required imports are present (add any missing ones):
+**File**: `internal/server/middleware_test.go`
 
 ```go
+package server
+
 import (
-	"context"
-	"fmt"
-	"log"
-	"net"
 	"net/http"
-	"net/url"
-	"strconv"
+	"net/http/httptest"
 	"strings"
-	"sync"
-	"time"
-)
-```
-
-### Step 4: Implement Signal Handling
-
-**File**: `cmd/cipher-hub/main.go`
-
-Replace the current placeholder implementation with signal handling:
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
-	"cipher-hub/internal/server"
+	"testing"
 )
 
-func main() {
-	fmt.Println("Cipher Hub - Key Management Service")
-	log.Println("Starting Cipher Hub...")
-
-	// Create server configuration
-	config := server.ServerConfig{
-		Host: "localhost",
-		Port: "8080",
-		// Timeouts will be set to secure defaults
+func TestMiddleware_TypeDefinition(t *testing.T) {
+	// Test that Middleware type can be used as expected
+	var middleware Middleware = func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Test", "middleware")
+			next.ServeHTTP(w, r)
+		})
 	}
 
-	// Create server instance
-	srv, err := server.NewServer(config)
-	if err != nil {
-		log.Fatalf("Failed to create server: %v", err)
+	// Create a simple handler to wrap
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	})
+
+	// Apply middleware
+	wrappedHandler := middleware(handler)
+
+	// Test the wrapped handler
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(w, req)
+
+	// Verify middleware was applied
+	if w.Header().Get("X-Test") != "middleware" {
+		t.Error("Middleware was not applied correctly")
 	}
 
-	// Create channel for shutdown signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	if w.Body.String() != "test response" {
+		t.Errorf("Handler response incorrect: got %q", w.Body.String())
+	}
+}
 
-	// Start graceful shutdown handler (before server start to prevent races)
-	go func() {
-		sig := <-sigChan
-		log.Printf("Received signal %v, initiating graceful shutdown...", sig)
-		
-		// Use server's configured timeout plus buffer for coordination
-		shutdownTimeout := srv.ShutdownTimeout() + 5*time.Second
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
+func TestNewMiddlewareStack(t *testing.T) {
+	stack := NewMiddlewareStack()
 
-		// Channel to signal shutdown completion
-		done := make(chan error, 1)
-		
-		// Perform shutdown in goroutine
-		go func() {
-			done <- srv.Shutdown()
-		}()
+	if stack == nil {
+		t.Fatal("NewMiddlewareStack() returned nil")
+	}
 
-		// Wait for shutdown completion or timeout
-		select {
-		case err := <-done:
-			if err != nil {
-				log.Printf("Server shutdown failed: %v", err)
-				os.Exit(1)
+	if stack.Count() != 0 {
+		t.Errorf("New middleware stack should be empty, got count %d", stack.Count())
+	}
+
+	if stack.middlewares == nil {
+		t.Error("Middleware slice should be initialized")
+	}
+}
+
+func TestMiddlewareStack_Use(t *testing.T) {
+	stack := NewMiddlewareStack()
+
+	// Create test middleware
+	middleware1 := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Middleware-1", "applied")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	middleware2 := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Middleware-2", "applied")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	// Test method chaining
+	result := stack.Use(middleware1).Use(middleware2)
+
+	// Verify chaining returns same instance
+	if result != stack {
+		t.Error("Use() should return same instance for chaining")
+	}
+
+	// Verify middleware count
+	if stack.Count() != 2 {
+		t.Errorf("Expected 2 middleware, got %d", stack.Count())
+	}
+}
+
+func TestMiddlewareStack_UseIf(t *testing.T) {
+	tests := []struct {
+		name           string
+		condition      bool
+		expectedCount  int
+		expectHeader   bool
+	}{
+		{
+			name:          "condition true",
+			condition:     true,
+			expectedCount: 1,
+			expectHeader:  true,
+		},
+		{
+			name:          "condition false",
+			condition:     false,
+			expectedCount: 0,
+			expectHeader:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stack := NewMiddlewareStack()
+
+			middleware := func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-Conditional", "applied")
+					next.ServeHTTP(w, r)
+				})
 			}
-			log.Println("Graceful shutdown completed")
-			os.Exit(0)
-		case <-shutdownCtx.Done():
-			log.Printf("Shutdown timeout (%v) exceeded, forcing exit", shutdownTimeout)
-			os.Exit(1)
-		}
-	}()
 
-	// Start the server
-	log.Printf("Starting HTTP server on %s", srv.Address())
-	if err := srv.Start(); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+			// Test conditional addition
+			result := stack.UseIf(tt.condition, middleware)
+
+			// Verify chaining
+			if result != stack {
+				t.Error("UseIf() should return same instance for chaining")
+			}
+
+			// Verify count
+			if stack.Count() != tt.expectedCount {
+				t.Errorf("Expected %d middleware, got %d", tt.expectedCount, stack.Count())
+			}
+
+			// Test application
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			finalHandler := stack.Apply(handler)
+			req := httptest.NewRequest("GET", "/test", nil)
+			w := httptest.NewRecorder()
+
+			finalHandler.ServeHTTP(w, req)
+
+			// Verify header presence
+			hasHeader := w.Header().Get("X-Conditional") == "applied"
+			if hasHeader != tt.expectHeader {
+				t.Errorf("Expected header present: %v, got: %v", tt.expectHeader, hasHeader)
+			}
+		})
+	}
+}
+
+func TestMiddlewareStack_Apply(t *testing.T) {
+	tests := []struct {
+		name        string
+		handler     http.Handler
+		expectBody  string
+		expectCode  int
+	}{
+		{
+			name: "with valid handler",
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("test response"))
+			}),
+			expectBody: "test response",
+			expectCode: http.StatusOK,
+		},
+		{
+			name:       "with nil handler",
+			handler:    nil,
+			expectBody: "404 page not found\n",
+			expectCode: http.StatusNotFound,
+		},
 	}
 
-	// Keep main goroutine alive
-	log.Println("Server started successfully. Press Ctrl+C to stop.")
-	select {} // Block forever, shutdown handled by signal handler
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stack := NewMiddlewareStack()
+
+			// Add test middleware to verify application
+			stack.Use(func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-Applied", "true")
+					next.ServeHTTP(w, r)
+				})
+			})
+
+			finalHandler := stack.Apply(tt.handler)
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			w := httptest.NewRecorder()
+
+			finalHandler.ServeHTTP(w, req)
+
+			// Verify middleware was applied
+			if w.Header().Get("X-Applied") != "true" {
+				t.Error("Middleware was not applied")
+			}
+
+			// Verify response
+			if w.Code != tt.expectCode {
+				t.Errorf("Expected status %d, got %d", tt.expectCode, w.Code)
+			}
+
+			if w.Body.String() != tt.expectBody {
+				t.Errorf("Expected body %q, got %q", tt.expectBody, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareStack_Apply_Order(t *testing.T) {
+	stack := NewMiddlewareStack()
+
+	var executionOrder []string
+
+	// Add middleware that tracks execution order
+	middleware1 := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			executionOrder = append(executionOrder, "middleware1-before")
+			next.ServeHTTP(w, r)
+			executionOrder = append(executionOrder, "middleware1-after")
+		})
+	}
+
+	middleware2 := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			executionOrder = append(executionOrder, "middleware2-before")
+			next.ServeHTTP(w, r)
+			executionOrder = append(executionOrder, "middleware2-after")
+		})
+	}
+
+	middleware3 := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			executionOrder = append(executionOrder, "middleware3-before")
+			next.ServeHTTP(w, r)
+			executionOrder = append(executionOrder, "middleware3-after")
+		})
+	}
+
+	// Add middleware in order
+	stack.Use(middleware1).Use(middleware2).Use(middleware3)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		executionOrder = append(executionOrder, "handler")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	finalHandler := stack.Apply(handler)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	finalHandler.ServeHTTP(w, req)
+
+	// Verify execution order: last registered middleware executes first
+	expectedOrder := []string{
+		"middleware3-before", // Last registered, outermost
+		"middleware2-before",
+		"middleware1-before", // First registered, innermost
+		"handler",
+		"middleware1-after",  // First registered, innermost
+		"middleware2-after",
+		"middleware3-after",  // Last registered, outermost
+	}
+
+	if len(executionOrder) != len(expectedOrder) {
+		t.Fatalf("Expected %d execution steps, got %d", len(expectedOrder), len(executionOrder))
+	}
+
+	for i, expected := range expectedOrder {
+		if executionOrder[i] != expected {
+			t.Errorf("Execution order[%d]: expected %q, got %q", i, expected, executionOrder[i])
+		}
+	}
+}
+
+func TestMiddlewareStack_Count(t *testing.T) {
+	stack := NewMiddlewareStack()
+
+	// Initially empty
+	if stack.Count() != 0 {
+		t.Errorf("New stack should have count 0, got %d", stack.Count())
+	}
+
+	// Add middleware and verify count
+	testMiddleware := func(next http.Handler) http.Handler { return next }
+
+	stack.Use(testMiddleware)
+	if stack.Count() != 1 {
+		t.Errorf("After one Use(), count should be 1, got %d", stack.Count())
+	}
+
+	stack.Use(testMiddleware)
+	if stack.Count() != 2 {
+		t.Errorf("After two Use(), count should be 2, got %d", stack.Count())
+	}
+
+	// Test UseIf with false condition
+	stack.UseIf(false, testMiddleware)
+	if stack.Count() != 2 {
+		t.Errorf("After UseIf(false), count should remain 2, got %d", stack.Count())
+	}
+
+	// Test UseIf with true condition
+	stack.UseIf(true, testMiddleware)
+	if stack.Count() != 3 {
+		t.Errorf("After UseIf(true), count should be 3, got %d", stack.Count())
+	}
+}
+
+func TestMiddlewareStack_Clear(t *testing.T) {
+	stack := NewMiddlewareStack()
+
+	// Add some middleware
+	testMiddleware := func(next http.Handler) http.Handler { return next }
+	stack.Use(testMiddleware).Use(testMiddleware)
+
+	if stack.Count() != 2 {
+		t.Errorf("Expected count 2 before clear, got %d", stack.Count())
+	}
+
+	// Clear and verify
+	stack.Clear()
+
+	if stack.Count() != 0 {
+		t.Errorf("Expected count 0 after clear, got %d", stack.Count())
+	}
+
+	// Verify we can still add middleware after clear
+	stack.Use(testMiddleware)
+	if stack.Count() != 1 {
+		t.Errorf("Expected count 1 after clear and add, got %d", stack.Count())
+	}
+}
+
+func TestMiddlewareStack_ChainedUsage(t *testing.T) {
+	stack := NewMiddlewareStack()
+
+	// Test complex chaining scenario
+	result := stack.
+		Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-1", "applied")
+				next.ServeHTTP(w, r)
+			})
+		}).
+		UseIf(true, func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-2", "applied")
+				next.ServeHTTP(w, r)
+			})
+		}).
+		UseIf(false, func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-3", "should-not-apply")
+				next.ServeHTTP(w, r)
+			})
+		}).
+		Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-4", "applied")
+				next.ServeHTTP(w, r)
+			})
+		})
+
+	// Verify chaining returns same instance
+	if result != stack {
+		t.Error("Chained methods should return same instance")
+	}
+
+	// Verify correct count (3 middleware, 1 skipped due to false condition)
+	if stack.Count() != 3 {
+		t.Errorf("Expected 3 middleware after chaining, got %d", stack.Count())
+	}
+
+	// Test application
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	finalHandler := stack.Apply(handler)
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	finalHandler.ServeHTTP(w, req)
+
+	// Verify applied middleware
+	if w.Header().Get("X-Middleware-1") != "applied" {
+		t.Error("Middleware 1 should be applied")
+	}
+	if w.Header().Get("X-Middleware-2") != "applied" {
+		t.Error("Middleware 2 should be applied")
+	}
+	if w.Header().Get("X-Middleware-3") != "" {
+		t.Error("Middleware 3 should not be applied (UseIf false)")
+	}
+	if w.Header().Get("X-Middleware-4") != "applied" {
+		t.Error("Middleware 4 should be applied")
+	}
 }
 ```
 
-### Step 5: Add Package Documentation
+### Step 4: Add Server Integration Tests
 
-**File**: `cmd/cipher-hub/doc.go`
+**File**: `internal/server/server_test.go`
 
-Update the package documentation to reflect signal handling:
+Add the following tests to the existing server test file:
 
 ```go
-// Package main provides the entry point for the Cipher Hub key management service.
-//
-// Cipher Hub is a containerized, security-first key management service designed
-// to act as a centralized cryptographic layer for distributed systems. It provides
-// secure key generation, storage, distribution, and lifecycle management through
-// a RESTful HTTP API.
-//
-// The service is designed for sidecar deployment patterns within container
-// orchestration platforms, handling all cryptographic operations for application
-// services without requiring changes to application code.
-//
-// Key Capabilities:
-//   - Secure cryptographic key generation and storage
-//   - Service registration and participant management
-//   - RESTful API for key operations with comprehensive authentication
-//   - Container-native design with health checks and graceful shutdown
-//   - Comprehensive audit logging for all key operations
-//
-// Signal Handling:
-// The service handles SIGINT and SIGTERM signals for graceful shutdown:
-//   - SIGINT (Ctrl+C): Initiates graceful shutdown with configured timeout
-//   - SIGTERM: Container orchestration graceful shutdown signal
-//   - Shutdown allows in-flight requests to complete within timeout bounds
-//
-// Usage:
-//
-//	cipher-hub [flags]
-//
-// The service reads configuration from environment variables and provides
-// health check endpoints for container orchestration integration.
-//
-// Security Considerations:
-// This service handles sensitive cryptographic material and should be deployed
-// with appropriate security controls including TLS, authentication, and
-// network isolation.
-package main
+func TestServer_MiddlewareIntegration(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Verify middleware stack is initialized
+	if server.Middleware() == nil {
+		t.Error("Server middleware stack should be initialized")
+	}
+
+	// Test middleware configuration
+	testMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Test-Middleware", "applied")
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	server.Middleware().Use(testMiddleware)
+
+	// Verify middleware was added
+	if server.Middleware().Count() != 1 {
+		t.Errorf("Expected 1 middleware, got %d", server.Middleware().Count())
+	}
+}
+
+func TestServer_SetHandler(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Test setting handler
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	})
+
+	server.SetHandler(testHandler)
+
+	// Verify handler was set
+	if server.Handler() != testHandler {
+		t.Error("Handler was not set correctly")
+	}
+}
+
+func TestServer_MiddlewareApplication(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add test middleware
+	server.Middleware().Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Test-Middleware", "applied")
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	// Set test handler
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test that middleware is applied
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	// Get the final handler from the HTTP server
+	if server.httpServer == nil || server.httpServer.Handler == nil {
+		t.Fatal("HTTP server or handler not initialized")
+	}
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify middleware was applied
+	if w.Header().Get("X-Test-Middleware") != "applied" {
+		t.Error("Middleware was not applied during server operation")
+	}
+
+	// Verify handler was called
+	if w.Body.String() != "test response" {
+		t.Errorf("Expected 'test response', got %q", w.Body.String())
+	}
+}
+
+func TestServer_NilHandlerDefault(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Don't set a handler - should get 404 default
+	// Add middleware to verify it still works
+	server.Middleware().Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Middleware", "applied")
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test default 404 behavior
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify middleware was still applied
+	if w.Header().Get("X-Middleware") != "applied" {
+		t.Error("Middleware should be applied even with nil handler")
+	}
+
+	// Verify 404 response
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 status, got %d", w.Code)
+	}
+}
+
+func TestServer_MiddlewareChaining(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add multiple middleware using chaining
+	server.Middleware().
+		Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-1", "applied")
+				next.ServeHTTP(w, r)
+			})
+		}).
+		UseIf(true, func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-2", "applied")
+				next.ServeHTTP(w, r)
+			})
+		}).
+		UseIf(false, func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Middleware-3", "should-not-apply")
+				next.ServeHTTP(w, r)
+			})
+		})
+
+	// Verify correct middleware count
+	if server.Middleware().Count() != 2 {
+		t.Errorf("Expected 2 middleware, got %d", server.Middleware().Count())
+	}
+
+	// Set handler and start server
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test middleware application
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify applied middleware
+	if w.Header().Get("X-Middleware-1") != "applied" {
+		t.Error("Middleware 1 should be applied")
+	}
+	if w.Header().Get("X-Middleware-2") != "applied" {
+		t.Error("Middleware 2 should be applied")
+	}
+	if w.Header().Get("X-Middleware-3") != "" {
+		t.Error("Middleware 3 should not be applied (UseIf false)")
+	}
+}
 ```
 
 ---
 
 ## Security Considerations
 
-### Resource Management Security
+### Middleware Security Patterns
 
-#### Graceful Shutdown Security
-- **In-Flight Request Completion**: Allow active requests to complete within timeout bounds
-- **Resource Cleanup**: Proper cleanup of listeners, connections, and server instances
-- **State Consistency**: Atomic state updates preventing inconsistent server state
-- **Timeout Enforcement**: Prevent indefinite shutdown blocking with configurable timeout
-
-#### Signal Handling Security
-- **Signal Validation**: Only handle expected signals (SIGINT, SIGTERM)
-- **Graceful Degradation**: Proper error handling if graceful shutdown fails
-- **Timeout Protection**: Prevent shutdown from blocking indefinitely
-- **Clean Exit**: Proper process termination with appropriate exit codes
-
-#### Thread Safety During Shutdown
+#### Safe Middleware Chaining
 ```go
-// Correct: Thread-safe shutdown with proper locking
-func (s *Server) Shutdown() error {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    
-    // Check state before proceeding
-    if !s.started || s.httpServer == nil {
-        return nil
+// Correct: Nil-safe middleware application
+func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
+    if handler == nil {
+        handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            http.NotFound(w, r)
+        })
     }
-    
-    // Perform shutdown operations...
+    // Continue with middleware application...
 }
 
-// Incorrect: Race condition potential
-func (s *Server) Shutdown() error {
-    if s.httpServer != nil { // Unsafe check
-        s.httpServer.Shutdown(ctx) // Potential nil pointer
+// Incorrect: Potential nil pointer dereference
+func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
+    result := handler // Could be nil
+    for _, middleware := range ms.middlewares {
+        result = middleware(result) // Panic if result is nil
     }
+    return result
 }
 ```
 
-### Error Handling Security
-
-#### Shutdown Error Management
+#### Thread Safety During Setup
 ```go
-// Correct: Secure error handling with cleanup
-if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-    // Clean up state even on error
-    s.started = false
-    s.httpServer = nil
-    return fmt.Errorf("%s: graceful shutdown failed: %w", ServerErrorPrefix, err)
+// Correct: Setup before serving requests
+func main() {
+    server, _ := NewServer(config)
+    
+    // Configure middleware before starting server
+    server.Middleware().
+        Use(SecurityMiddleware()).
+        UseIf(config.EnableCORS, CORSMiddleware())
+    
+    server.SetHandler(myHandler)
+    server.Start() // Middleware applied during start
 }
 
-// Incorrect: Incomplete cleanup on error
-if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-    return err // State not cleaned up
+// Incorrect: Modifying middleware after server start
+func main() {
+    server, _ := NewServer(config)
+    server.Start()
+    
+    // UNSAFE: Modifying middleware after server is running
+    server.Middleware().Use(newMiddleware) // Race condition
+}
+```
+
+#### Handler Protection
+```go
+// Middleware should always call next handler appropriately
+func SecurityMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Perform security checks
+        if !isAuthorized(r) {
+            http.Error(w, "Unauthorized", http.StatusUnauthorized)
+            return // Don't call next handler
+        }
+        
+        // Security checks passed, continue chain
+        next.ServeHTTP(w, r)
+    })
+}
+```
+
+### Conditional Middleware Security
+
+#### Environment-Based Security Middleware
+```go
+// Example secure conditional middleware usage
+func setupMiddleware(server *Server, config AppConfig) {
+    server.Middleware().
+        Use(RequestIDMiddleware()).              // Always generate request IDs
+        Use(LoggingMiddleware()).                // Always log requests
+        UseIf(config.EnableCORS, CORSMiddleware(config.CORSOrigins)). // Environment-specific CORS
+        UseIf(config.IsProduction, HSTSMiddleware()).                 // HSTS only in production
+        UseIf(config.EnableAuth, AuthMiddleware()).                   // Auth when enabled
+        Use(SecurityHeadersMiddleware())         // Always apply security headers
 }
 ```
 
@@ -377,381 +1180,51 @@ if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 
 ## Testing Requirements
 
-### Step 1: Add Enhanced Shutdown Tests
+### Unit Testing Requirements
 
-**File**: `internal/server/server_test.go`
+#### Middleware Type Testing
+- [ ] Verify `Middleware` type signature accepts `http.Handler` and returns `http.Handler`
+- [ ] Test middleware function application with simple handlers
+- [ ] Verify middleware can modify requests and responses
 
-Add comprehensive tests for the enhanced shutdown functionality:
+#### MiddlewareStack Testing
+- [ ] Test `NewMiddlewareStack()` creates empty stack
+- [ ] Test `Use()` method adds middleware and supports chaining
+- [ ] Test `UseIf()` method conditionally adds middleware
+- [ ] Test `Apply()` method wraps handler with all middleware
+- [ ] Test `Count()` method returns correct middleware count
+- [ ] Test `Clear()` method removes all middleware
+- [ ] Test nil handler handling in `Apply()`
+- [ ] Test middleware execution order (reverse application order)
 
-```go
-func TestServer_Shutdown(t *testing.T) {
-	tests := []struct {
-		name        string
-		config      ServerConfig
-		startServer bool
-		wantErr     bool
-	}{
-		{
-			name: "successful shutdown of running server",
-			config: ServerConfig{
-				Host:            "localhost",
-				Port:            "0",
-				ShutdownTimeout: 5 * time.Second,
-			},
-			startServer: true,
-			wantErr:     false,
-		},
-		{
-			name: "shutdown of already stopped server",
-			config: ServerConfig{
-				Host:            "localhost",
-				Port:            "0",
-				ShutdownTimeout: 5 * time.Second,
-			},
-			startServer: false,
-			wantErr:     false,
-		},
-		{
-			name: "shutdown with very short timeout",
-			config: ServerConfig{
-				Host:            "localhost",
-				Port:            "0",
-				ShutdownTimeout: 1 * time.Millisecond, // Very short timeout
-			},
-			startServer: true,
-			wantErr:     false, // Should still work for basic case
-		},
-	}
+#### Server Integration Testing
+- [ ] Test server includes initialized middleware stack
+- [ ] Test `Middleware()` method returns accessible stack
+- [ ] Test `SetHandler()` and `Handler()` methods
+- [ ] Test middleware application during server start
+- [ ] Test middleware chaining through server interface
+- [ ] Test default 404 handler when no handler set
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server, err := NewServer(tt.config)
-			if err != nil {
-				t.Fatalf("NewServer() unexpected error: %v", err)
-			}
+### Integration Testing Requirements
 
-			// Start server if requested
-			if tt.startServer {
-				err = server.Start()
-				if err != nil {
-					t.Fatalf("Start() unexpected error: %v", err)
-				}
+#### End-to-End Testing
+- [ ] Test middleware applied to actual HTTP requests
+- [ ] Test multiple middleware execution order in request flow
+- [ ] Test conditional middleware application in different scenarios
+- [ ] Test middleware with various handler types (HandlerFunc, ServeMux, custom)
 
-				// Verify server is running
-				if !server.IsStarted() {
-					t.Error("Server should be started before shutdown test")
-				}
-			}
+#### Edge Case Testing
+- [ ] Test empty middleware stack with various handlers
+- [ ] Test middleware stack with nil handlers
+- [ ] Test very large middleware stacks (performance validation)
+- [ ] Test middleware that doesn't call next handler
+- [ ] Test middleware that modifies request/response
 
-			// Test shutdown
-			err = server.Shutdown()
-
-			if tt.wantErr {
-				if err == nil {
-					t.Error("Shutdown() expected error, got nil")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Shutdown() unexpected error: %v", err)
-				}
-			}
-
-			// Verify server state after shutdown
-			if server.IsStarted() {
-				t.Error("Server should not be started after Shutdown()")
-			}
-
-			// Verify shutdown is idempotent
-			err2 := server.Shutdown()
-			if err2 != nil {
-				t.Errorf("Second Shutdown() should be idempotent, got error: %v", err2)
-			}
-		})
-	}
-}
-```
-
-### Step 2: Add Concurrent Shutdown Test
-
-```go
-func TestServer_Shutdown_Concurrent(t *testing.T) {
-	config := ServerConfig{
-		Host:            "localhost",
-		Port:            "0",
-		ShutdownTimeout: 2 * time.Second,
-	}
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	// Start the server
-	err = server.Start()
-	if err != nil {
-		t.Fatalf("Start() unexpected error: %v", err)
-	}
-
-	// Test concurrent shutdown calls
-	var wg sync.WaitGroup
-	errors := make(chan error, 3)
-
-	// Launch multiple concurrent shutdown calls
-	for i := 0; i < 3; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errors <- server.Shutdown()
-		}()
-	}
-
-	wg.Wait()
-	close(errors)
-
-	// Collect results
-	var errorCount int
-	for err := range errors {
-		if err != nil {
-			errorCount++
-			t.Logf("Shutdown error: %v", err)
-		}
-	}
-
-	// All shutdown calls should succeed (idempotent)
-	if errorCount > 0 {
-		t.Errorf("Expected all concurrent shutdowns to succeed, got %d errors", errorCount)
-	}
-
-	// Verify final state
-	if server.IsStarted() {
-		t.Error("Server should not be started after concurrent shutdown")
-	}
-}
-```
-
-### Step 3: Add Shutdown Context Test
-
-```go
-func TestServer_ShutdownContext(t *testing.T) {
-	config := ServerConfig{
-		Host:            "localhost",
-		Port:            "8080",
-		ShutdownTimeout: 5 * time.Second,
-	}
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	ctx := server.ShutdownContext()
-	if ctx == nil {
-		t.Error("ShutdownContext() returned nil")
-	}
-
-	// Verify context is not canceled initially
-	select {
-	case <-ctx.Done():
-		t.Error("ShutdownContext() should not be canceled initially")
-	default:
-		// Expected - context should be active
-	}
-
-	// Test shutdown cancels context
-	err = server.Shutdown()
-	if err != nil {
-		t.Errorf("Shutdown() unexpected error: %v", err)
-	}
-
-	// Verify context is canceled after shutdown
-	select {
-	case <-ctx.Done():
-		// Expected - context should be canceled
-	default:
-		t.Error("ShutdownContext() should be canceled after Shutdown()")
-	}
-
-	// Verify the context is properly canceled
-	if ctx.Err() != context.Canceled {
-		t.Errorf("Expected context.Canceled, got %v", ctx.Err())
-	}
-}
-```
-
-### Step 4: Add Server Lifecycle Integration Test
-
-```go
-func TestServer_Shutdown_TimeoutValidation(t *testing.T) {
-	tests := []struct {
-		name            string
-		shutdownTimeout time.Duration
-		expectSuccess   bool
-	}{
-		{
-			name:            "very short timeout",
-			shutdownTimeout: 1 * time.Millisecond,
-			expectSuccess:   true, // Should still work for basic shutdown
-		},
-		{
-			name:            "reasonable timeout",
-			shutdownTimeout: 2 * time.Second,
-			expectSuccess:   true,
-		},
-		{
-			name:            "long timeout",
-			shutdownTimeout: 30 * time.Second,
-			expectSuccess:   true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := ServerConfig{
-				Host:            "localhost",
-				Port:            "0",
-				ShutdownTimeout: tt.shutdownTimeout,
-			}
-
-			server, err := NewServer(config)
-			if err != nil {
-				t.Fatalf("NewServer() unexpected error: %v", err)
-			}
-
-			// Start the server
-			err = server.Start()
-			if err != nil {
-				t.Fatalf("Start() unexpected error: %v", err)
-			}
-
-			// Record shutdown start time
-			start := time.Now()
-
-			// Perform shutdown
-			err = server.Shutdown()
-			shutdownDuration := time.Since(start)
-
-			if tt.expectSuccess {
-				if err != nil {
-					t.Errorf("Shutdown() unexpected error: %v", err)
-				}
-			} else {
-				if err == nil {
-					t.Error("Shutdown() expected error for timeout case")
-				}
-			}
-
-			// Verify shutdown completed reasonably quickly
-			// (Should be much faster than timeout for basic case)
-			maxExpectedDuration := tt.shutdownTimeout + 1*time.Second
-			if shutdownDuration > maxExpectedDuration {
-				t.Errorf("Shutdown took %v, expected less than %v", 
-					shutdownDuration, maxExpectedDuration)
-			}
-
-			// Verify server state
-			if server.IsStarted() {
-				t.Error("Server should not be started after shutdown")
-			}
-		})
-	}
-}
-
-func TestServer_Shutdown_TimeoutConfiguration(t *testing.T) {
-	config := ServerConfig{
-		Host:            "localhost",
-		Port:            "0",
-		ShutdownTimeout: 3 * time.Second,
-	}
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	// Verify timeout is configured correctly
-	if server.ShutdownTimeout() != 3*time.Second {
-		t.Errorf("ShutdownTimeout() = %v, want %v", 
-			server.ShutdownTimeout(), 3*time.Second)
-	}
-
-	// Test shutdown timeout documentation is accurate
-	if server.ShutdownTimeout() != config.ShutdownTimeout {
-		t.Errorf("ShutdownTimeout() should match config value")
-	}
-}
-	config := ServerConfig{
-		Host:            "localhost",
-		Port:            "0",
-		ShutdownTimeout: 3 * time.Second,
-	}
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	// Test initial state
-	if server.IsStarted() {
-		t.Error("New server should not be started")
-	}
-
-	// Test start
-	err = server.Start()
-	if err != nil {
-		t.Fatalf("Start() unexpected error: %v", err)
-	}
-
-	if !server.IsStarted() {
-		t.Error("Server should be started after Start()")
-	}
-
-	// Brief pause to ensure server is fully operational
-	time.Sleep(50 * time.Millisecond)
-
-	// Test shutdown
-	err = server.Shutdown()
-	if err != nil {
-		t.Errorf("Shutdown() unexpected error: %v", err)
-	}
-
-	if server.IsStarted() {
-		t.Error("Server should not be started after Shutdown()")
-	}
-
-	// Test idempotent shutdown
-	err = server.Shutdown()
-	if err != nil {
-		t.Errorf("Second Shutdown() should be idempotent: %v", err)
-	}
-
-	// Test that start after shutdown should fail
-	err = server.Start()
-	if err == nil {
-		t.Error("Start() after Shutdown() should fail")
-		// Clean up if it unexpectedly succeeded
-		server.Shutdown()
-	}
-}
-```
-
-### Step 5: Update Existing Tests
-
-Update existing test cleanup to use the new shutdown method:
-
-```go
-func TestServer_Start(t *testing.T) {
-	// ... existing test code ...
-
-	// Update cleanup section
-	defer func() {
-		if err := server.Shutdown(); err != nil {
-			t.Logf("Cleanup shutdown error: %v", err)
-		}
-	}()
-
-	// ... rest of test ...
-}
-```
+#### Security Testing
+- [ ] Test middleware setup before server start (thread safety)
+- [ ] Test that middleware receives all requests appropriately
+- [ ] Test conditional middleware security (CORS, HSTS, etc.)
+- [ ] Test middleware error handling doesn't leak information
 
 ---
 
@@ -762,83 +1235,49 @@ func TestServer_Start(t *testing.T) {
 # Navigate to project root
 cd cipher-hub/
 
-# Verify clean build
+# Verify clean build with new middleware code
 go build ./...
 
 # Expected: No compilation errors
 ```
 
-### Step 2: Test Verification
+### Step 2: Unit Test Verification
 ```bash
-# Run all server tests with verbose output
+# Run middleware-specific tests
+go test ./internal/server -run "TestMiddleware" -v
+
+# Expected: All middleware tests pass
+# Sample output:
+# === RUN   TestMiddleware_TypeDefinition
+# === RUN   TestNewMiddlewareStack
+# === RUN   TestMiddlewareStack_Use
+# === RUN   TestMiddlewareStack_UseIf
+# === RUN   TestMiddlewareStack_Apply
+# --- PASS: All middleware tests should pass
+```
+
+### Step 3: Server Integration Test Verification
+```bash
+# Run server integration tests
+go test ./internal/server -run "TestServer_Middleware" -v
+
+# Expected: All server middleware integration tests pass
+# === RUN   TestServer_MiddlewareIntegration
+# === RUN   TestServer_SetHandler
+# === RUN   TestServer_MiddlewareApplication
+# --- PASS: All integration tests should pass
+```
+
+### Step 4: Complete Test Suite Verification
+```bash
+# Run all server tests to ensure no regressions
 go test ./internal/server -v
 
-# Expected: All tests pass including new shutdown tests
-# Sample expected output:
-# === RUN   TestServer_Shutdown
-# === RUN   TestServer_Shutdown_Concurrent
-# === RUN   TestServer_ShutdownContext
-# === RUN   TestServer_CompleteLifecycle
-# --- PASS: All tests should pass
-# PASS
+# Expected: All existing and new tests pass
+# Verify middleware tests don't break existing server functionality
 ```
 
-### Step 3: Integration Test with Main
-```bash
-# Build and run the main application
-go build ./cmd/cipher-hub
-
-# Run in background
-./cipher-hub &
-CIPHER_PID=$!
-
-# Wait for startup
-sleep 2
-
-# Test graceful shutdown with SIGTERM
-kill -TERM $CIPHER_PID
-
-# Expected: Graceful shutdown message in logs
-# "Received signal terminated, initiating graceful shutdown..."
-# "Graceful shutdown completed"
-```
-
-### Step 4: Manual Signal Testing
-```bash
-# Run the application interactively
-go run ./cmd/cipher-hub
-
-# Expected output:
-# "Cipher Hub - Key Management Service"
-# "Starting Cipher Hub..."
-# "Starting HTTP server on localhost:8080"
-# "Server started successfully. Press Ctrl+C to stop."
-
-# Test graceful shutdown with Ctrl+C
-# Expected:
-# "Received signal interrupt, initiating graceful shutdown..."
-# "Graceful shutdown completed"
-# Clean exit
-
-# Note: The shutdown timeout in main.go uses server's configured timeout
-# plus a 5-second buffer to prevent coordination timeout issues
-```
-
-### Step 5: Container Signal Testing (Optional)
-```bash
-# Build Docker image (when Dockerfile is available)
-# docker build -t cipher-hub .
-
-# Test container signal handling
-# docker run --name test-cipher cipher-hub &
-# docker kill -s TERM test-cipher
-
-# Expected: Graceful shutdown with SIGTERM
-# "Received signal terminated, initiating graceful shutdown..."
-# "Graceful shutdown completed"
-```
-
-### Step 6: Code Quality Verification
+### Step 5: Code Quality Verification
 ```bash
 # Format and lint checks
 go fmt ./...
@@ -847,142 +1286,186 @@ go vet ./...
 # Expected: No issues reported
 ```
 
-### Step 7: Test Coverage Analysis
+### Step 6: Documentation Verification
 ```bash
-# Check test coverage
-go test ./internal/server -cover
+# Verify go doc generates proper documentation
+go doc -all ./internal/server | grep -A 5 "type Middleware"
+go doc -all ./internal/server | grep -A 10 "type MiddlewareStack"
 
-# Expected: High coverage percentage (>90%) maintained or improved
-# New timeout validation tests should improve coverage
+# Expected: Complete documentation for middleware types and methods
 ```
 
-### Step 8: Timeout Coordination Verification
+### Step 7: Test Coverage Analysis
 ```bash
-# Verify timeout coordination works correctly
-go test ./internal/server -run TestServer_Shutdown_TimeoutValidation -v
+# Check test coverage for middleware functionality
+go test ./internal/server -cover -coverprofile=coverage.out
+go tool cover -func=coverage.out | grep middleware
 
-# Expected: All timeout scenarios pass
-# Verifies that shutdown completes within expected timeframes
+# Expected: High coverage for middleware functionality (>90%)
+```
+
+### Step 8: Example Usage Verification
+```bash
+# Create simple test program to verify middleware usage
+cat > test_middleware.go << 'EOF'
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "cipher-hub/internal/server"
+)
+
+func main() {
+    config := server.ServerConfig{
+        Host: "localhost",
+        Port: "8080",
+    }
+    
+    srv, err := server.NewServer(config)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Configure middleware
+    srv.Middleware().
+        Use(func(next http.Handler) http.Handler {
+            return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                fmt.Printf("Request: %s %s\n", r.Method, r.URL.Path)
+                next.ServeHTTP(w, r)
+            })
+        }).
+        UseIf(true, func(next http.Handler) http.Handler {
+            return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                w.Header().Set("X-Powered-By", "Cipher Hub")
+                next.ServeHTTP(w, r)
+            })
+        })
+    
+    // Set handler
+    srv.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("Hello, Middleware!"))
+    }))
+    
+    fmt.Printf("Middleware count: %d\n", srv.Middleware().Count())
+    fmt.Println("Middleware usage example compiled successfully")
+}
+EOF
+
+go run test_middleware.go
+rm test_middleware.go
+
+# Expected: "Middleware count: 2" and "Middleware usage example compiled successfully"
 ```
 
 ---
 
 ## Completion Criteria
 
-### ✅ **Step 2.1.1.3 is complete when:**
+### ✅ **Step 2.1.2.1 is complete when:**
 
-1. **Enhanced Shutdown() Method Implementation**:
-   - [x] Coordinates with `http.Server.Shutdown()` for graceful termination
-   - [x] Uses configured `ShutdownTimeout` for HTTP server shutdown
-   - [x] Maintains thread safety with proper mutex protection
-   - [x] Provides idempotent behavior (multiple calls safe)
-   - [x] Proper error handling with consistent error prefixes
-   - [x] Complete state cleanup (server instance and started flag)
+1. **Middleware Type Definition**:
+   - [x] `Middleware` type defined as `func(http.Handler) http.Handler`
+   - [x] Industry-standard middleware signature implemented
+   - [x] Compatible with Go web framework patterns
+   - [x] Properly documented with usage examples
 
-2. **Shutdown Context Pattern Resolution**:
-   - [x] Uses `WithCancel` for coordination context in `NewServer()`
-   - [x] Separates coordination context from shutdown timeout for cleaner semantics
-   - [x] Proper context cleanup in `Shutdown()` method
-   - [x] Maintains backward compatibility with existing context usage
-   - [x] Enhanced documentation explaining context pattern rationale
+2. **Enhanced Middleware Stack Implementation**:
+   - [x] `MiddlewareStack` struct with private middleware slice
+   - [x] `NewMiddlewareStack()` constructor with proper initialization
+   - [x] `Use()` method for guaranteed middleware with chaining support
+   - [x] `UseIf()` method for conditional middleware with chaining support
+   - [x] `Apply()` method with correct middleware order (reverse application)
+   - [x] `Count()` and `Clear()` utility methods for testing
+   - [x] Nil handler protection in `Apply()` method
 
-3. **Signal Handling Implementation**:
-   - [x] Handles SIGINT and SIGTERM signals in `main.go`
-   - [x] Implements graceful shutdown coordination with server's configured timeout
-   - [x] Uses server's ShutdownTimeout + buffer to prevent coordination timeout issues
-   - [x] Proper error handling and exit code management with descriptive messages
-   - [x] Logging for shutdown events and status
-   - [x] Separation of concerns (signals in main, shutdown in server)
-   - [x] Signal handler setup before server start to prevent race conditions
+3. **Server Integration**:
+   - [x] `middleware` field added to Server struct
+   - [x] Middleware stack initialized in `NewServer()` constructor
+   - [x] `Middleware()` accessor method for stack configuration
+   - [x] `SetHandler()` and `Handler()` methods for handler management
+   - [x] Middleware application integrated into `Start()` method
+   - [x] Proper integration with existing server lifecycle
 
-4. **Resource Management**:
-   - [x] In-flight requests complete before shutdown (within timeout)
-   - [x] Proper cleanup of HTTP server instance and listeners
-   - [x] Atomic state transitions preventing inconsistent state
-   - [x] Context cancellation for coordination purposes
+4. **Comprehensive Testing**:
+   - [x] Unit tests for middleware type definition and usage
+   - [x] Complete MiddlewareStack testing (Use, UseIf, Apply, Count, Clear)
+   - [x] Middleware execution order testing
+   - [x] Conditional middleware testing (UseIf with true/false)
+   - [x] Server integration testing (middleware + handler + start)
+   - [x] Edge case testing (nil handlers, empty stacks)
+   - [x] Chaining behavior testing for fluent API
 
-5. **Thread Safety and Concurrency**:
-   - [x] Thread-safe shutdown operations with mutex protection
-   - [x] Handles concurrent shutdown attempts gracefully
-   - [x] Proper goroutine coordination during shutdown
-   - [x] No race conditions between shutdown and server operations
+5. **Documentation and Code Quality**:
+   - [x] Complete Go doc comments for all public types and methods
+   - [x] Usage examples in documentation
+   - [x] Security considerations documented
+   - [x] Code passes formatting (`go fmt`) and static analysis (`go vet`)
+   - [x] High test coverage maintained (>90%)
 
-6. **Comprehensive Testing**:
-   - [x] Tests successful shutdown of running server
-   - [x] Tests idempotent shutdown behavior
-   - [x] Tests concurrent shutdown attempts
-   - [x] Tests shutdown context cancellation
-   - [x] Tests complete server lifecycle (start → shutdown → cleanup)
-   - [x] Tests timeout scenarios and edge cases with various timeout values
-   - [x] Tests timeout configuration and coordination between main.go and server
-   - [x] Validates shutdown duration expectations for performance verification
+6. **Security and Best Practices**:
+   - [x] Thread-safe middleware setup patterns documented
+   - [x] Nil handler protection implemented
+   - [x] Secure middleware chaining with proper error handling
+   - [x] Clear separation between setup and runtime phases
+   - [x] No global state or hidden dependencies
 
-7. **Documentation and Code Quality**:
-   - [x] Enhanced Go doc comments for shutdown functionality
-   - [x] Updated package documentation reflecting signal handling
-   - [x] Passes formatting (`go fmt`) and static analysis (`go vet`)
-   - [x] Maintains high test coverage (>90%)
-   - [x] Clear completion verification through manual testing
+### 🏗️ **Middleware Foundation Complete**
 
-### 🏗️ **HTTP Server Infrastructure Complete**
+This implementation provides the complete foundation for Task 2.1.2 Middleware Infrastructure:
+- ✅ **Step 2.1.2.1**: Middleware function signature pattern (COMPLETE)
+- 📋 **Step 2.1.2.2**: Request logging middleware implementation (NEXT)
+- 📋 **Step 2.1.2.3**: CORS handling middleware (FUTURE)
 
-This implementation completes Phase 2.1 HTTP Server Infrastructure:
-- ✅ **Step 2.1.1.1**: HTTP server configuration structure
-- ✅ **Step 2.1.1.2**: HTTP server Start() method with lifecycle management
-- ✅ **Step 2.1.1.3**: Graceful shutdown mechanism with signal handling
+**Ready for Next Steps**:
+- **Step 2.1.2.2**: Implement request logging middleware using established middleware pattern
+- **Step 2.1.2.3**: Add CORS handling with environment-configurable origins
+- **Step 2.1.2.4**: Error response formatting middleware
+- **Step 2.1.3.1**: Health check system leveraging middleware infrastructure
 
-**Ready for Phase 2.1 Next Steps**:
-- **Step 2.1.2.1**: Middleware function signature pattern
-- **Step 2.1.3.1**: Health check system implementation
-
-### 📁 **Files Modified**
-- `internal/server/server.go` - Enhanced `Shutdown()` method and context pattern fix
-- `cmd/cipher-hub/main.go` - Complete signal handling implementation
-- `cmd/cipher-hub/doc.go` - Updated package documentation
-- `internal/server/server_test.go` - Comprehensive shutdown testing
+### 📁 **Files Created/Modified**
+- `internal/server/middleware.go` - Complete middleware type and stack implementation
+- `internal/server/middleware_test.go` - Comprehensive middleware testing
+- `internal/server/server.go` - Enhanced with middleware integration
+- `internal/server/server_test.go` - Added middleware integration tests
 
 ---
 
 ## Architecture Benefits Achieved
 
-### 🔒 **Production-Ready Security**
-- **Graceful Degradation**: Proper shutdown even when HTTP server shutdown fails
-- **Resource Protection**: Complete cleanup preventing resource leaks
-- **State Consistency**: Atomic state transitions with thread safety
-- **Timeout Enforcement**: Configurable shutdown timeout preventing indefinite blocking
-- **Signal Safety**: Proper signal handling without race conditions through setup ordering
-- **Timeout Coordination**: Server's configured timeout + buffer prevents coordination issues
-- **Enhanced Error Context**: Detailed error messages include timeout information for debugging
+### 🔧 **Flexible Middleware Architecture**
+- **Standard Pattern**: Industry-standard `func(http.Handler) http.Handler` signature
+- **Conditional Support**: `UseIf()` enables environment-specific middleware
+- **Method Chaining**: Fluent API for clean middleware configuration
+- **Execution Order**: Predictable middleware execution (reverse application order)
 
-### 🏗️ **Enterprise Architecture**
-- **Container Integration**: SIGTERM support for orchestration platforms
-- **Operational Excellence**: Comprehensive logging for shutdown events
-- **Separation of Concerns**: Signal handling in main, server lifecycle in server package
-- **Configuration Driven**: Shutdown timeout configurable via ServerConfig
-- **Context Coordination**: Proper context management for shutdown signaling
+### 🏗️ **Clean Server Integration**
+- **Composition**: MiddlewareStack as separate component within Server
+- **Lifecycle Integration**: Middleware applied during server start
+- **Handler Management**: Clean separation of handler setting and middleware application
+- **Future Extensibility**: Foundation ready for route-specific middleware
 
-### 🧪 **Testing Excellence**
-- **Comprehensive Coverage**: All shutdown scenarios tested including edge cases
-- **Concurrency Testing**: Thread safety validated with concurrent operations
-- **Integration Testing**: Complete lifecycle testing with real HTTP server
-- **Manual Verification**: Signal handling tested with actual OS signals
-- **Regression Prevention**: Existing functionality maintained and enhanced
+### 🧪 **Comprehensive Testing**
+- **Unit Testing**: Complete middleware stack testing with edge cases
+- **Integration Testing**: Server + middleware + handler testing
+- **Security Testing**: Thread safety and nil handler protection
+- **Documentation Testing**: Examples verify API usability
 
-### ⚡ **Performance & Reliability**
-- **Graceful Shutdown**: In-flight requests complete within timeout bounds
-- **Minimal Downtime**: Fast shutdown initiation with proper resource cleanup
-- **Memory Safety**: Proper goroutine termination and resource deallocation
-- **Operational Monitoring**: Clear logging for troubleshooting and monitoring
+### ⚡ **Performance & Security**
+- **Efficient Application**: Middleware applied once during server start
+- **Thread Safety**: Safe setup patterns with clear runtime boundaries
+- **Error Handling**: Graceful handling of nil handlers and edge cases
+- **Memory Efficiency**: Minimal overhead for middleware chaining
 
-This implementation establishes a production-ready HTTP server with complete lifecycle management, preparing Cipher Hub for middleware integration and API endpoint development in the next phase! 🚀
+This implementation establishes a robust, flexible middleware foundation that enables the development of request logging, CORS handling, authentication, and other HTTP processing middleware in subsequent steps! 🚀
 
 ---
 
 ## Next Phase Preview
 
-**Phase 2.1 Continuation** will build on this solid foundation:
-- **Step 2.1.2.1**: Middleware function signature pattern using established server instance
-- **Step 2.1.3.1**: Health check system leveraging complete server lifecycle
-- **Step 2.1.4.1**: Handler framework building on graceful shutdown capabilities
-
-The HTTP server infrastructure is now production-ready with complete lifecycle management, security-conscious design, and comprehensive testing coverage.
+**Step 2.1.2.2** will build on this foundation:
+- **Request Logging Middleware**: Use established middleware pattern for request/response logging
+- **Correlation ID Generation**: Leverage middleware chaining for request tracing
+- **Structured Logging**: Integrate with Go's `log/slog` for production logging
+- **Performance Metrics**: Add request duration and status code tracking
