@@ -17,4 +17,4 @@ Execute: [**Artifact Review**](.prompts/review-artifacts.md)
   - `spec.md` - Technical architecture alignment
   - `style-guide.md` - Updated patterns and standards
 
-**Output**: Synchronized documentation suite reflecting current implementation state.
+**Output**: Synchronized documentation suite reflecting current implementation state. Artifacts Only.
