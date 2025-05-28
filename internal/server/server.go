@@ -179,8 +179,9 @@ type Server struct {
 	shutdownCancel context.CancelFunc
 
 	// Server state
-	started bool
-	mu      sync.RWMutex
+	disposed bool
+	started  bool
+	mu       sync.RWMutex
 }
 
 // NewServer creates a new HTTP server instance with the specified configuration.
@@ -205,8 +206,10 @@ func NewServer(config ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	// Create shutdown context with timeout for gracefuly lifecycle management
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), config.ShutdownTimeout)
+	// Create shutdown context for graceful lifecycle management
+	// Use WithCancel for coordination, timeout will be applied in Shutdown()
+	// This pattern separates coordination (cancel signal) from operation timeout
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
 	// Create server with validated configuration
 	server := &Server{
@@ -218,6 +221,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 		// Lifecycle management
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
+		disposed:       false,
 		started:        false,
 		mu:             sync.RWMutex{},
 	}
@@ -240,6 +244,10 @@ func NewServer(config ServerConfig) (*Server, error) {
 func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.disposed {
+		return fmt.Errorf("%s: cannot start server after shutdown", ServerErrorPrefix)
+	}
 
 	// Check if server is already started
 	if s.started {
@@ -299,6 +307,66 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// Shutdown initiates graceful shutdown of the HTTP server.
+// It coordinates with the HTTP server to complete in-flight requests
+// within the configured shutdown timeout before forcing termination.
+//
+// The method is thread-safe and idempotent - calling Shutdown() on an
+// already shut down server returns nil without side effects.
+//
+// Returns:
+//   - error: Shutdown error if graceful shutdown fails within timeout
+//
+// Security: Ensures proper resource cleanup and state consistency.
+// In-flight requests complete within ShutdownTimeout before forced termination.
+func (s *Server) Shutdown() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Cancel coordination context for any waiting operations
+	defer s.shutdownCancel()
+
+	// Indicate shutdown called
+	s.disposed = true
+
+	// Check if server is already shutdown
+	if !s.started || s.httpServer == nil {
+		return nil
+	}
+
+	// Create timeout context for HTTP server shutdown
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.config.ShutdownTimeout)
+	defer cancel()
+
+	// Perform graceful HTTP server shutdown
+	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+		// If graceful shutdown fails, clean up state anyway
+		s.started = false
+		s.httpServer = nil
+		return fmt.Errorf(
+			"%s: graceful shutdown failed after %v timeout: %w",
+			ServerErrorPrefix,
+			s.config.ShutdownTimeout,
+			err,
+		)
+	}
+
+	// Update server state after successful shutdown
+	s.started = false
+	s.httpServer = nil
+
+	return nil
+}
+
+// IsStarted returns whether the server is currently accepting connections.
+// This method is safe for concurrent access and reflects the actual
+// operational state of the HTTP server.
+func (s *Server) IsStarted() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.started
+}
+
 // Config returns a copy of the server configuration
 func (s *Server) Config() ServerConfig {
 	return s.config
@@ -349,20 +417,6 @@ func (s *Server) ShutdownTimeout() time.Duration {
 // ShutdownContext returns the context used for graceful shutdown coordination
 func (s *Server) ShutdownContext() context.Context {
 	return s.shutdownCtx
-}
-
-// IsStarted returns whether the server is currently accepting connections.
-// This method is safe for concurrent access and reflects the actual
-// operational state of the HTTP server.
-func (s *Server) IsStarted() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.started
-}
-
-// Shutdown initiates graceful shutdown by canceling the shutdown context
-func (s *Server) Shutdown() {
-	s.shutdownCancel()
 }
 
 // isvalidHostname performs strict hostname validation according to RFC standards

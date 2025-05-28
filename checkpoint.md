@@ -2,156 +2,204 @@
 
 ## Current Development State
 
-**Active Step**: Step 2.1.1.2 Complete ✅ → Step 2.1.1.3 Next ⏳
+**Active Step**: Step 2.1.1.3 Complete \u2705 \u2192 Step 2.1.2.1 Next \u23f3
 
-### Step 2.1.1.2 Completion Status
-- **HTTP Server Start() Method**: ✅ **COMPLETED**
-  - Added `Start()` method with `http.Server` creation using validated configuration
-  - Implemented listener creation with proper error handling and resource cleanup
-  - Added thread safety with `sync.RWMutex` for concurrent state management
-  - Integrated shutdown context coordination and lifecycle management
-  - Added channel-based readiness signaling for reliable server startup coordination
+### Step 2.1.1.3 Completion Status
+- **Graceful Shutdown Implementation**: \u2705 **COMPLETED**
+  - Enhanced `Shutdown()` method with HTTP server coordination using `http.Server.Shutdown()`
+  - Integrated shutdown timeout from ServerConfig with proper context management
+  - Thread-safe shutdown state management with `disposed` lifecycle tracking
+  - Comprehensive error handling with secure information handling and proper cleanup
+  - Idempotent shutdown behavior preventing resource leaks and double-shutdown issues
 
-- **Port Validation Enhancement**: ✅ **COMPLETED**
-  - **Issue Resolved**: Updated ServerConfig validation to support port "0" (dynamic assignment)
-  - **Solution Applied**: Enhanced `validatePort()` to allow port 0 for OS dynamic assignment
-  - **Validation Range**: Changed from `1-65535` to `0-65535` with updated error messages
-  - **Documentation Updated**: Enhanced `PortNum()` method comments to reflect port 0 semantics
+- **Signal Handling Implementation**: \u2705 **COMPLETED**
+  - Added SIGINT and SIGTERM signal handling in `cmd/cipher-hub/main.go`
+  - Implemented signal channel creation and registration with proper buffering
+  - Added graceful shutdown coordination between signal handler and server instance
+  - Enhanced main application with production-ready signal processing and timeout coordination
+  - Proper exit code management for different shutdown scenarios
 
-- **Test Implementation**: ✅ **COMPLETED**
+- **Context Pattern Resolution**: \u2705 **COMPLETED**
+  - **Issue Resolved**: Fixed shutdown context pattern in `NewServer()` constructor
+  - **Solution Applied**: Changed from `WithTimeout` to `WithCancel` for coordination context
+  - **Pattern Clarification**: Separated coordination context from operation timeout for cleaner semantics
+  - **Documentation Enhanced**: Added comprehensive explanations of context usage and rationale
+
+- **Server Lifecycle Enhancement**: \u2705 **COMPLETED**
+  - Added `disposed` state tracking to prevent restart after shutdown
+  - Enhanced constructor to properly initialize all lifecycle state variables
+  - Implemented robust lifecycle management preventing improper state transitions
+  - Updated `Start()` method to check disposed state and prevent restart after shutdown
+
+- **Comprehensive Testing**: \u2705 **COMPLETED**
+  - **Test Implementation**: Added comprehensive shutdown functionality tests
   - **Issues Resolved**:
-    - Fixed redundant test cases in `TestServer_Start` 
-    - Added comprehensive failure condition testing
-    - Updated test error message expectations to match validation changes
-    - Separated configuration validation tests from Start() method tests
-  - **Test Coverage**: All tests passing with comprehensive edge case coverage
-  - **Quality Verified**: Thread safety, error handling, and lifecycle management fully tested
+    - Fixed unrealistic timeout values in shutdown tests (changed 1ms to 1s)
+    - Enhanced server lifecycle testing with proper state validation
+    - Added concurrent shutdown testing and timeout validation
+    - Separated timeout configuration tests from lifecycle tests
+  - **Test Coverage**: Complete coverage of graceful shutdown scenarios, error conditions, and edge cases
+  - **Quality Verification**: All tests passing with realistic timeout expectations
 
 ### Architecture Enhancements Achieved
-- **Thread Safety**: Full concurrent access protection with proper mutex usage
-- **Dynamic Port Support**: Production-ready port assignment (explicit and OS-assigned)
-- **Resource Management**: Proper cleanup on startup failure with listener lifecycle coordination
-- **State Consistency**: Reliable server state tracking with atomic updates
-- **Error Handling**: Comprehensive error coverage with secure information handling
+- **Complete HTTP Server Lifecycle**: Full production-ready server with start, operation, and graceful shutdown
+- **Signal Integration**: Container-native signal handling for orchestration platforms
+- **Robust State Management**: Thread-safe lifecycle with disposed pattern preventing improper restarts
+- **Timeout Coordination**: Proper separation of coordination context and operation timeout
+- **Resource Management**: Complete cleanup on shutdown failure with proper error propagation
+- **Context Resolution**: Clear separation between coordination signaling and shutdown timeout
 
-### Current Implementation Status ✅
+### Current Implementation Status \u2705
 - **Files Completed**:
-  - `internal/server/server.go` - Start() method implemented, port validation enhanced, thread safety added
-  - `internal/server/server_test.go` - Comprehensive Start() tests added, all validation tests passing
-- **Architecture Foundation**: HTTP server lifecycle fully implemented with production-ready patterns
-- **Quality Status**: All tests passing, >95% coverage maintained, security standards upheld
+  - `internal/server/server.go` - Complete HTTP server lifecycle with graceful shutdown and context resolution
+  - `cmd/cipher-hub/main.go` - Production-ready signal handling with timeout coordination
+  - `cmd/cipher-hub/doc.go` - Updated package documentation reflecting signal handling capabilities
+  - `internal/server/server_test.go` - Comprehensive testing including shutdown coordination and lifecycle validation
+- **Architecture Foundation**: Complete HTTP server infrastructure ready for middleware and handler development
+- **Quality Status**: All tests passing, >95% coverage maintained, production-ready signal handling
 
 ## Architectural Decisions
 
-### Port Validation Strategy Decision
-- **Context**: ServerConfig rejected port "0" causing test failures with dynamic assignment
-- **Decision**: Allow port 0 for OS dynamic port assignment in validation
+### Context Pattern Resolution Decision
+- **Context**: Shutdown context used `WithTimeout` causing coordination complexity
+- **Decision**: Use `WithCancel` for coordination, apply timeout directly in `Shutdown()` method
 - **Rationale**: 
-  - Port 0 is valid in network programming for dynamic assignment
-  - Essential for testing scenarios where specific port conflicts need to be avoided
-  - Maintains security bounds while supporting operational flexibility
-- **Impact**: Enhanced testing capabilities and production deployment flexibility
+  - Separates coordination signaling from operation timeout for cleaner semantics
+  - Allows shutdown timeout to be applied where it's actually needed (`http.Server.Shutdown()`)
+  - Simplifies context lifecycle and prevents timeout race conditions
+- **Impact**: Enhanced clarity and more robust shutdown coordination
 
-### Test Strategy Separation Decision
-- **Context**: Confusion between configuration validation failures and Start() method failures
-- **Decision**: Separate test responsibilities by validation stage
+### Server Lifecycle Management Decision
+- **Context**: Need to prevent server restart after shutdown for production safety
+- **Decision**: Added `disposed` state tracking in addition to `started` state
 - **Implementation**:
-  - `TestServerConfig_Validate`: Tests configuration validation logic (including invalid ports)
-  - `TestServer_Start`: Tests actual server startup behavior (with valid configurations)
-- **Rationale**: Clear separation of concerns and more meaningful test scenarios
+  - `disposed` flag set early in `Shutdown()` method to prevent any restart attempts
+  - `Start()` method checks disposed state before allowing server start
+  - Proper state initialization in `NewServer()` constructor
+- **Rationale**: Production servers shouldn't allow restart after shutdown for clear lifecycle semantics
 
-### Thread Safety Enhancement Decision
-- **Context**: Concurrent access potential for server state management
-- **Decision**: Added `sync.RWMutex` protection for all state access
-- **Implementation**: Protected `started` field and `httpServer` access with proper locking
-- **Rationale**: Production-ready concurrent access patterns and state consistency
+### Signal Handling Architecture Decision
+- **Context**: Need production-ready graceful shutdown for container orchestration
+- **Decision**: Implement signal handling in main with timeout coordination
+- **Implementation**: 
+  - Signal handler goroutine setup before server start to prevent race conditions
+  - Server's configured timeout plus buffer to prevent coordination timeout issues
+  - Proper error handling and exit code management for different scenarios
+- **Rationale**: Container platforms expect graceful SIGTERM handling with proper resource cleanup
+
+### Test Strategy Enhancement Decision
+- **Context**: Unrealistic timeout values causing test failures and poor coverage
+- **Decision**: Use realistic timeout values reflecting production scenarios
+- **Implementation**:
+  - Changed minimum test timeouts from 1ms to 1 second for reliable coordination
+  - Enhanced lifecycle testing with proper state validation
+  - Separated timeout configuration tests from operational behavior tests
+- **Rationale**: Tests should reflect realistic production scenarios rather than extreme edge cases
 
 ## Unimplemented Ideas
 
-### Testing Refinements (Immediate)
-- **Port Conflict Testing**: Implement realistic port binding conflict tests
-  - Create actual listener on specific port, then test second server binding failure
-  - Validate proper error handling and resource cleanup on binding failures
-- **Concurrent Start Testing**: Test multiple goroutines calling Start() simultaneously
-  - Verify thread safety implementation under concurrent access
-  - Ensure only one Start() succeeds while others return appropriate errors
-
-### Enhanced Error Context (Future Enhancement)
-- **Structured Error Details**: Include more diagnostic information in Start() errors
+### Advanced Error Context (Future Enhancement)
+- **Structured Error Details**: Include more diagnostic information in shutdown errors
   - Add attempted address and system error details for better debugging
-  - Consider structured error types for different failure categories
-- **Startup Timing Metrics**: Add optional startup duration tracking for monitoring
+  - Consider structured error types for different shutdown failure categories
+- **Shutdown Timing Metrics**: Add optional shutdown duration tracking for monitoring
+- **Enhanced Logging**: Structured logging with correlation IDs for shutdown events
 
 ### Configuration Validation Improvements (Future)
 - **Hostname Resolution Validation**: Optional DNS resolution validation for configured hosts
 - **Port Availability Check**: Optional pre-flight port availability checking
 - **Environment-Specific Validation**: Different validation rules based on deployment environment
 
+### Performance Optimizations (Future)
+- **Shutdown Performance**: Optimize shutdown coordination for high-connection scenarios
+- **Signal Handler Efficiency**: Evaluate signal handler performance under load
+- **Memory Management**: Enhanced memory cleanup during shutdown process
+
+### Testing Enhancements (Immediate Consideration)
+- **Integration Testing**: Add end-to-end testing with actual HTTP requests during shutdown
+- **Load Testing**: Test shutdown behavior under various connection loads
+- **Container Testing**: Validate signal handling in actual container environments
+
 ## Session Context
 
 ### Key Collaborative Insights
-- **Testing Quality Focus**: Identified redundant test cases and missing failure scenarios
-- **Network Programming Best Practices**: Port 0 dynamic assignment is standard practice
-- **Error Message Consistency**: Test expectations must align with actual implementation messages
-- **Separation of Concerns**: Configuration validation vs runtime operation failures need distinct testing
+- **Go Concurrency Deep Dive**: Extensive exploration of goroutine fundamentals and coordination patterns
+  - Understanding that `main()` always runs as the main goroutine (not "promoted")
+  - Signal handling creating three-tier goroutine hierarchy (main \u2192 signal handler \u2192 shutdown execution)
+  - Channel buffering strategies to prevent deadlocks during timeout scenarios
+  - Select statement "first ready wins" behavior for racing completion vs timeout
+- **Learning Methodology**: Effective LLM-assisted learning through incremental understanding and analogical reasoning
+  - Container vs Host OS analogy for understanding goroutines vs OS threads
+  - Step-by-step code analysis building from basic concepts to sophisticated patterns
+  - Validation of understanding through practical implementation challenges
 
 ### Problem-Solving Approach
-- **Systematic Debugging**: Identified test failures, traced to validation logic changes
-- **Architectural Thinking**: Considered broader implications of port validation changes
-- **Quality Standards**: Maintained comprehensive test coverage throughout changes
-- **Implementation Patterns**: Applied established error handling and thread safety patterns
+- **Systematic Implementation**: Following step guide methodology with comprehensive testing
+- **Context Pattern Resolution**: Identified and resolved context timeout pattern complexity through architectural clarity
+- **Test-Driven Refinement**: Used test failures to identify and fix realistic scenario modeling
+- **Lifecycle Management**: Enhanced server state management based on production requirements
 
 ### Technical Learning Points
-- **Go Network Programming**: Port 0 semantics for dynamic assignment by OS
-- **Test Design Patterns**: Proper separation of validation vs operational testing
-- **Thread Safety Patterns**: RWMutex usage for read-heavy, write-occasional scenarios
-- **Error Message Evolution**: Test maintenance when implementation messages evolve
+- **Signal Handling Fundamentals**: Understanding signal channels, goroutine coordination, and OS signal semantics
+- **Go Concurrency Architecture**: Deep understanding of goroutine hierarchy and channel-based coordination
+- **Context Management**: Proper separation of coordination context vs operation timeout
+- **Production Patterns**: Container-native shutdown, timeout protection, and defensive programming
 
-### Step 2.1.1.3 Implementation Requirements (Immediate Next)
+### Step 2.1.2.1 Implementation Requirements (Immediate Next)
 
-**Target**: Implement graceful shutdown mechanism with signal handling
+**Target**: Create middleware function signature pattern for enhanced HTTP request processing
 
 **Specific Implementation Needs**:
-1. **Add Signal Handling** - Implement SIGINT and SIGTERM signal capture
-2. **Graceful Shutdown Method** - Enhance existing `Shutdown()` method with HTTP server coordination
-3. **In-Flight Request Completion** - Ensure active requests complete before shutdown
-4. **Shutdown Timeout Integration** - Use configured `ShutdownTimeout` from ServerConfig
-5. **Resource Cleanup** - Proper cleanup of listeners and HTTP server instances
+1. **Define Middleware Type** - Create `type Middleware func(http.Handler) http.Handler` pattern
+2. **Middleware Stack Structure** - Enhanced middleware stack with conditional support
+3. **Application Pattern** - Middleware chaining with proper handler wrapping
+4. **Foundation Integration** - Leverage completed server lifecycle for middleware execution
+5. **Testing Framework** - Comprehensive middleware testing patterns and validation
 
 **Foundation Ready**:
-- HTTP server instance available in `s.httpServer` field
-- Shutdown context integration established in NewServer()
-- Thread-safe state management with `started` field tracking
-- Error handling patterns established for lifecycle operations
+- Complete HTTP server lifecycle with graceful shutdown available
+- Signal handling integrated for production deployment
+- Thread-safe server state management established
+- Context patterns established for request lifecycle coordination
+- Testing framework ready for middleware validation
 
 ### Session Context
-- Development approach: 20-30 minute incremental steps maintained
-- Quality standard: >95% test coverage with security focus achieved in Step 2.1.1.2  
-- Architecture foundation: Robust HTTP server lifecycle with thread safety and dynamic port support
-- Testing approach: Comprehensive validation with separate concerns (config vs operational testing)
+- Development approach: Maintained 20-30 minute incremental steps with comprehensive validation
+- Quality standard: >95% test coverage with production-ready signal handling achieved
+- Architecture foundation: Complete HTTP server infrastructure with container-native capabilities
+- Learning integration: Deep Go concurrency understanding enhancing implementation quality
 
-### Next Steps After 2.1.1.3
-- **Step 2.1.2.1**: Create middleware function signature pattern (server lifecycle complete)
-- **Task 2.1.3**: Health check system implementation 
+### Next Steps After 2.1.2.1
+- **Step 2.1.2.2**: Implement request logging middleware with correlation IDs
+- **Step 2.1.2.3**: Add CORS handling middleware with environment-configurable origins
+- **Task 2.1.3**: Health check system implementation leveraging complete server lifecycle
 - Continue following `roadmap.md` progression through Phase 2.1
 
 ## Implementation Context
 
 ### Code Quality Status
-- **Security Implementation**: Thread-safe operations with resource protection maintained
-- **Error Handling**: Comprehensive error coverage with secure information handling
-- **Testing Standards**: Table-driven tests with security-focused edge cases
-- **Documentation**: Enhanced Go doc comments with concurrency and port semantics
+- **Security Implementation**: Production-ready shutdown with proper resource cleanup maintained
+- **Signal Handling**: Container-native signal processing with comprehensive error handling
+- **Testing Standards**: Realistic scenario testing with production-relevant timeout values
+- **Documentation**: Enhanced Go doc comments with signal handling and lifecycle semantics
 
 ### Session Progress Summary
-- **Complete Implementation**: Successfully implemented HTTP server Start() method with full lifecycle management
-- **Enhanced Architecture**: Added thread safety, dynamic port support, and comprehensive error handling
-- **Quality Achievement**: Resolved all testing issues and maintained high coverage standards
-- **Foundation Strengthening**: Robust HTTP server foundation ready for graceful shutdown implementation
+- **Complete Implementation**: Successfully implemented graceful shutdown mechanism with signal handling
+- **Enhanced Architecture**: Added robust server lifecycle management with disposed pattern
+- **Context Resolution**: Fixed coordination context pattern for cleaner shutdown semantics
+- **Quality Achievement**: Resolved all testing issues with realistic timeout expectations
+- **Foundation Completion**: HTTP server infrastructure complete and ready for middleware development
+
+### Go Concurrency Understanding Advancement
+- **Fundamental Concepts**: Deep understanding of goroutine nature, main goroutine behavior, and channel coordination
+- **Practical Patterns**: Three-tier goroutine orchestration, timeout protection, and select statement racing
+- **Production Applications**: Signal handling, graceful shutdown, and container orchestration integration
+- **Learning Methodology**: Effective LLM-assisted exploration with incremental understanding building
 
 ---
 
-*Checkpoint Status: Step 2.1.1.2 Complete ✅ → Step 2.1.1.3 Ready*  
-*Next Focus: Implement graceful shutdown mechanism with signal handling*  
-*Architecture Status: Robust HTTP server foundation with thread safety and dynamic port support*  
-*Development Quality: All tests passing, comprehensive coverage maintained*
+*Checkpoint Status: Step 2.1.1.3 Complete \u2705 \u2192 Step 2.1.2.1 Ready*  
+*Next Focus: Create middleware function signature pattern for HTTP request processing*  
+*Architecture Status: Complete HTTP server infrastructure with graceful shutdown and signal handling*  
+*Development Quality: All tests passing, comprehensive coverage, production-ready capabilities*  
+*Learning Achievement: Advanced Go concurrency understanding with practical application*

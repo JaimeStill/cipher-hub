@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -492,10 +493,11 @@ func TestServer_Start(t *testing.T) {
 			}
 
 			// Cleanup
-			server.Shutdown()
-
-			// Wait briefly for shutdown to complete
-			time.Sleep(50 * time.Millisecond)
+			defer func() {
+				if err := server.Shutdown(); err != nil {
+					t.Logf("Cleanup shutdown error: %v", err)
+				}
+			}()
 		})
 	}
 }
@@ -585,6 +587,384 @@ func TestServer_Start_PortInUse(t *testing.T) {
 
 	// Note: Testing actual port conflicts requires more complex setup
 	// This test validates the general error handling pattern
+}
+
+func TestServer_Shutdown(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      ServerConfig
+		startServer bool
+		wantErr     bool
+	}{
+		{
+			name: "successful shutdown of running server",
+			config: ServerConfig{
+				Host:            "localhost",
+				Port:            "0",
+				ShutdownTimeout: 5 * time.Second,
+			},
+			startServer: true,
+			wantErr:     false,
+		},
+		{
+			name: "shutdown of already stopped server",
+			config: ServerConfig{
+				Host:            "localhost",
+				Port:            "0",
+				ShutdownTimeout: 5 * time.Second,
+			},
+			startServer: false,
+			wantErr:     false,
+		},
+		{
+			name: "shutdown with short but reasonable timeout",
+			config: ServerConfig{
+				Host:            "localhost",
+				Port:            "0",
+				ShutdownTimeout: 1 * time.Second,
+			},
+			startServer: true,
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, err := NewServer(tt.config)
+			if err != nil {
+				t.Fatalf("NewServer() unexpected error: %v", err)
+			}
+
+			// Start server if requested
+			if tt.startServer {
+				err = server.Start()
+				if err != nil {
+					t.Fatalf("Start() unexpected error: %v", err)
+				}
+
+				// Verify server is running
+				if !server.IsStarted() {
+					t.Error("Server should be started before shutdown test")
+				}
+			}
+
+			// Test shutdown
+			err = server.Shutdown()
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Shutdown() expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Shutdown() unexpected error: %v", err)
+				}
+			}
+
+			// Verify server state after shutdown
+			if server.IsStarted() {
+				t.Error("Server should not be started after Shutdown()")
+			}
+
+			// Verify shutdown is idempotent
+			err2 := server.Shutdown()
+			if err2 != nil {
+				t.Errorf("Second Shutdown() should be idempotent, got error: %v", err2)
+			}
+		})
+	}
+}
+
+func TestServer_Shutdown_Concurrent(t *testing.T) {
+	config := ServerConfig{
+		Host:            "localhost",
+		Port:            "0",
+		ShutdownTimeout: 2 * time.Second,
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Start the server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+
+	// Test concurrent shutdown calls
+	var wg sync.WaitGroup
+	errors := make(chan error, 3)
+
+	// Launch multiple concurrent shutdown calls
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errors <- server.Shutdown()
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Collect results
+	var errorCount int
+	for err := range errors {
+		if err != nil {
+			errorCount++
+			t.Logf("Shutdown error: %v", err)
+		}
+	}
+
+	// All shutdown calls should succeed (idempotent)
+	if errorCount > 0 {
+		t.Errorf("Expected all concurrent shutdowns to succeed, got %d errors", errorCount)
+	}
+
+	// Verify final state
+	if server.IsStarted() {
+		t.Error("Server should not be started after concurrent shutdown")
+	}
+}
+
+func TestServer_ShutdownContext(t *testing.T) {
+	config := ServerConfig{
+		Host:            "localhost",
+		Port:            "8080",
+		ShutdownTimeout: 5 * time.Second,
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	ctx := server.ShutdownContext()
+	if ctx == nil {
+		t.Error("ShutdownContext() returned nil")
+	}
+
+	// Verify context is not canceled initially
+	select {
+	case <-ctx.Done():
+		t.Error("ShutdownContext() should not be canceled initially")
+	default:
+		// Expected - context should be active
+	}
+
+	// Test shutdown cancels context
+	err = server.Shutdown()
+	if err != nil {
+		t.Errorf("Shutdown() unexpected error: %v", err)
+	}
+
+	// Verify context is canceled after shutdown
+	select {
+	case <-ctx.Done():
+		// Expected - context should be canceled
+	default:
+		t.Error("ShutdownContext() should be canceled after Shutdown()")
+	}
+
+	// Verify the context is properly canceled
+	if ctx.Err() != context.Canceled {
+		t.Errorf("Expected context.Canceled, got %v", ctx.Err())
+	}
+}
+
+func TestServer_Shutdown_TimeoutValidation(t *testing.T) {
+	tests := []struct {
+		name            string
+		shutdownTimeout time.Duration
+		expectSuccess   bool
+	}{
+		{
+			name:            "short but reasonable timeout",
+			shutdownTimeout: 1 * time.Second,
+			expectSuccess:   true,
+		},
+		{
+			name:            "reasonable timeout",
+			shutdownTimeout: 2 * time.Second,
+			expectSuccess:   true,
+		},
+		{
+			name:            "long timeout",
+			shutdownTimeout: 30 * time.Second,
+			expectSuccess:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := ServerConfig{
+				Host:            "localhost",
+				Port:            "0",
+				ShutdownTimeout: tt.shutdownTimeout,
+			}
+
+			server, err := NewServer(config)
+			if err != nil {
+				t.Fatalf("NewServer() unexpected error: %v", err)
+			}
+
+			// Start the server
+			err = server.Start()
+			if err != nil {
+				t.Fatalf("Start() unexpected error: %v", err)
+			}
+
+			// Record shutdown start time
+			start := time.Now()
+
+			// Perform shutdown
+			err = server.Shutdown()
+			shutdownDuration := time.Since(start)
+
+			if tt.expectSuccess {
+				if err != nil {
+					t.Errorf("Shutdown() unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Error("Shutdown() expected error for timeout case")
+				}
+			}
+
+			// Verify shutdown completed reasonably quickly
+			// (Should be much faster than timeout for basic case)
+			maxExpectedDuration := tt.shutdownTimeout + 1*time.Second
+			if shutdownDuration > maxExpectedDuration {
+				t.Errorf("Shutdown took %v, expected less than %v",
+					shutdownDuration, maxExpectedDuration)
+			}
+
+			// Verify server state
+			if server.IsStarted() {
+				t.Error("Server should not be started after shutdown")
+			}
+		})
+	}
+}
+
+func TestServer_Shutdown_TimeoutConfiguration(t *testing.T) {
+	config := ServerConfig{
+		Host:            "localhost",
+		Port:            "0",
+		ShutdownTimeout: 3 * time.Second,
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Verify timeout is configured correctly
+	if server.ShutdownTimeout() != 3*time.Second {
+		t.Errorf("ShutdownTimeout() = %v, want %v",
+			server.ShutdownTimeout(), 3*time.Second)
+	}
+
+	// Test shutdown timeout documentation is accurate
+	if server.ShutdownTimeout() != config.ShutdownTimeout {
+		t.Errorf("ShutdownTimeout() should match config value")
+	}
+}
+
+func TestServer_CompleteLifecycle(t *testing.T) {
+	config := ServerConfig{
+		Host:            "localhost",
+		Port:            "0",
+		ShutdownTimeout: 3 * time.Second,
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Test initial state
+	if server.IsStarted() {
+		t.Error("New server should not be started")
+	}
+
+	// Test start
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+
+	if !server.IsStarted() {
+		t.Error("Server should be started after Start()")
+	}
+
+	// Brief pause to ensure server is fully operational
+	time.Sleep(50 * time.Millisecond)
+
+	// Test shutdown
+	err = server.Shutdown()
+	if err != nil {
+		t.Errorf("Shutdown() unexpected error: %v", err)
+	}
+
+	if server.IsStarted() {
+		t.Error("Server should not be started after Shutdown()")
+	}
+
+	// Test idempotent shutdown
+	err = server.Shutdown()
+	if err != nil {
+		t.Errorf("Second Shutdown() should be idempotent: %v", err)
+	}
+
+	// Test that start after shutdown should fail
+	err = server.Start()
+	if err == nil {
+		t.Error("Start() after Shutdown() should fail")
+		// Clean up if it unexpectedly succeeded
+		server.Shutdown()
+	}
+
+	// Verify the error message
+	if err != nil && !strings.Contains(err.Error(), "cannot start server after shutdown") {
+		t.Errorf("Expected 'cannot start server after shutdown' error, got: %v", err)
+	}
+}
+
+func TestServer_IsStarted(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Server should not be started initially
+	if server.IsStarted() {
+		t.Error("IsStarted() should return false for new server")
+	}
+
+	// Start the server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+
+	// Server should be started after Start()
+	if !server.IsStarted() {
+		t.Error("IsStarted() should return true after Start()")
+	}
+
+	// Cleanup
+	server.Shutdown()
+	time.Sleep(50 * time.Millisecond)
+
+	// Note: IsStarted() behavior after shutdown will be tested in Step 2.1.1.3
 }
 
 func TestServer_HTTPServerConfiguration(t *testing.T) {
@@ -682,82 +1062,6 @@ func TestServer_Accessors(t *testing.T) {
 	if server.ShutdownTimeout() != 40*time.Second {
 		t.Errorf("ShutdownTimeout() = %v, want %v", server.ShutdownTimeout(), 40*time.Second)
 	}
-}
-
-func TestServer_ShutdownContext(t *testing.T) {
-	config := ServerConfig{
-		Host:            "localhost",
-		Port:            "8080",
-		ShutdownTimeout: 5 * time.Second,
-	}
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	ctx := server.ShutdownContext()
-	if ctx == nil {
-		t.Error("ShutdownContext() returned nil")
-	}
-
-	// Verify context is not canceled initially
-	select {
-	case <-ctx.Done():
-		t.Error("ShutdownContext() should not be canceled initially")
-	default:
-		// Expected - context should be active
-	}
-
-	// Test shutdown cancellation
-	server.Shutdown()
-
-	// Verify context is canceled after shutdown
-	select {
-	case <-ctx.Done():
-		// Expected - context should be canceled
-	default:
-		t.Error("ShutdownContext() should be canceled after Shutdown()")
-	}
-
-	// Verify the context is a cancellation context, not timeout
-	if ctx.Err() != context.Canceled {
-		t.Errorf("Expected context.Canceled, got %v", ctx.Err())
-	}
-}
-
-func TestServer_IsStarted(t *testing.T) {
-	config := ServerConfig{
-		Host: "localhost",
-		Port: "0",
-	}
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	// Server should not be started initially
-	if server.IsStarted() {
-		t.Error("IsStarted() should return false for new server")
-	}
-
-	// Start the server
-	err = server.Start()
-	if err != nil {
-		t.Fatalf("Start() unexpected error: %v", err)
-	}
-
-	// Server should be started after Start()
-	if !server.IsStarted() {
-		t.Error("IsStarted() should return true after Start()")
-	}
-
-	// Cleanup
-	server.Shutdown()
-	time.Sleep(50 * time.Millisecond)
-
-	// Note: IsStarted() behavior after shutdown will be tested in Step 2.1.1.3
 }
 
 func TestIsValidHostname(t *testing.T) {

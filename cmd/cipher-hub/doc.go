@@ -16,6 +16,12 @@
 //   - Container-native design with health checks and graceful shutdown
 //   - Comprehensive audit logging for all key operations
 //
+// Signal Handling:
+// The service handles SIGINT and SIGTERM signals for graceful shutdown:
+//   - SIGINT (Ctrl+C): Initiates graceful shutdown with configured timeout
+//   - SIGTERM: Container orchestration graceful shutdown signal
+//   - Shutdown allows in-flight requests to complete within timeout bounds
+//
 // Usage:
 //
 //	cipher-hub [flags]
