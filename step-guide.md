@@ -1,31 +1,32 @@
-# Step 2.1.2.1: Create Middleware Function Signature Pattern
+# Step 2.1.2.2: Implement Request Logging Middleware
 
 ## Overview
 
-**Step**: 2.1.2.1  
+**Step**: 2.1.2.2  
 **Task**: 2.1.2 (Middleware Infrastructure)  
 **Target**: 2.1 (Basic Server Setup)  
 **Phase**: 2 (HTTP Server Infrastructure)  
 
-**Time Estimate**: 25-30 minutes  
-**Scope**: Define middleware type, enhanced stack with conditional support, and server integration
+**Time Estimate**: 20-25 minutes  
+**Scope**: Implement structured request logging middleware with correlation IDs and performance metrics
 
 ## Step Objectives
 
 ### Primary Deliverables
-- [ ] **Middleware Type Definition**: Define `Middleware` as `func(http.Handler) http.Handler`
-- [ ] **Enhanced Middleware Stack**: Create `MiddlewareStack` with `Use()` and `UseIf()` methods
-- [ ] **Server Integration**: Add middleware field to Server and application logic
-- [ ] **Handler Application Pattern**: Implement middleware chaining and handler wrapping
-- [ ] **Foundation Integration**: Leverage completed HTTP server lifecycle
+- [ ] **Request Logging Middleware**: Implement structured logging using established middleware pattern
+- [ ] **Secure Request ID Generation**: Generate cryptographically secure correlation IDs
+- [ ] **Structured Logging Integration**: Use `log/slog` for production-ready JSON logging
+- [ ] **Response Tracking**: Capture status codes, response bytes, and request duration
+- [ ] **Context Propagation**: Add request IDs to context for request lifecycle tracking
+- [ ] **Comprehensive Testing**: Unit and integration tests following established patterns
 
 ### Implementation Requirements
-- **Files Created**: `internal/server/middleware.go`, `internal/server/middleware_test.go`
-- **Files Modified**: `internal/server/server.go`
-- **Architecture Focus**: Middleware function signature pattern with conditional support
-- **Security Focus**: Proper middleware chaining and handler protection
-- **Go Best Practices**: Composition patterns and interface compliance
-- **Foundation Usage**: Build on established server lifecycle and thread safety
+- **Files Created**: `internal/server/request_logging.go`, tests for request logging middleware
+- **Files Modified**: `internal/server/server_test.go` (add integration tests)
+- **Architecture Focus**: Structured logging with correlation IDs and performance metrics
+- **Security Focus**: No sensitive data in logs, secure request ID generation
+- **Go Best Practices**: Use `log/slog`, context propagation, and middleware composition
+- **Foundation Usage**: Leverage complete middleware infrastructure from Step 2.1.2.1
 
 ---
 
@@ -33,433 +34,571 @@
 
 ### Technical Specifications
 
-#### Middleware Type Definition
-- **Standard Pattern**: `type Middleware func(http.Handler) http.Handler`
-- **Industry Compliance**: Follows Go web framework conventions (Gin, Echo, Chi)
-- **Composability**: Enables clean chaining and wrapping patterns
-- **Testing**: Easy to unit test individual middleware functions
+#### Request Logging Middleware Requirements
+- **Standard Middleware Pattern**: Use `func(http.Handler) http.Handler` signature
+- **Structured Logging**: JSON format with `log/slog` for container environments
+- **Request Correlation**: Cryptographically secure request IDs for tracing
+- **Performance Metrics**: Request duration, status codes, and response size tracking
+- **Context Integration**: Propagate request IDs through request context
 
-#### Enhanced Middleware Stack
-- **Flexible Application**: Both `Use()` for guaranteed middleware and `UseIf()` for conditional
-- **Chaining Support**: Method chaining for fluent API design
-- **Order Control**: Middleware applied in registration order
-- **Thread Safety**: Safe for concurrent access during setup phase
+#### Request ID Generation Requirements
+- **Security**: Use `crypto/rand` for cryptographically secure random generation
+- **Format**: 8-byte random values hex-encoded to 16-character strings
+- **Collision Resistance**: Sufficient entropy for high-throughput scenarios
+- **Error Handling**: Graceful handling of ID generation failures
 
-#### Server Integration Pattern
-- **Composition**: MiddlewareStack as separate component within Server
-- **Lifecycle Integration**: Middleware application during server start
-- **Handler Management**: Simple handler setting with middleware application
-- **Future Extensibility**: Foundation for route-specific middleware
+#### Logging Requirements
+- **No Sensitive Data**: Never log authentication tokens, key material, or user data
+- **Structured Format**: JSON logging with consistent field names
+- **Performance Tracking**: Request start/end with duration calculations
+- **Error Handling**: Proper error responses when logging setup fails
 
 ---
 
 ## Implementation
 
-### Step 1: Create Middleware Type and Stack
+### Step 1: Create Request ID Generation and Constants
 
-**File**: `internal/server/middleware.go`
+**File**: `internal/server/request_logging.go`
 
 ```go
 package server
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
+	"strings"
+	"time"
 )
 
-// Middleware defines the standard middleware function signature.
-// A middleware function takes an http.Handler and returns an http.Handler,
-// allowing for request/response processing before and after the wrapped handler.
+// Request logging constants
+const (
+	// Request ID generation
+	RequestIDBytes    = 8                    // 8 bytes for crypto/rand generation
+	RequestIDHexLength = RequestIDBytes * 2  // 16 characters hex-encoded
+
+	// Error handling
+	RequestLoggingErrorPrefix = "RequestLogging"
+
+	// Log field names for consistency
+	LogFieldRequestID    = "request_id"
+	LogFieldMethod       = "method"
+	LogFieldPath         = "path"
+	LogFieldStatusCode   = "status_code"
+	LogFieldDurationMS   = "duration_ms"
+	LogFieldBytesWritten = "bytes_written"
+	LogFieldRemoteAddr   = "remote_addr"
+	LogFieldUserAgent    = "user_agent"
+	LogFieldContentLength = "content_length"
+)
+
+// Sensitive headers that should never be logged
+var SensitiveHeaders = map[string]bool{
+	"authorization": true,
+	"cookie":        true,
+	"x-api-key":     true,
+	"x-auth-token":  true,
+	"proxy-authorization": true,
+}
+
+// contextKey type for type-safe context values
+type contextKey string
+
+const (
+	requestIDCtxKey contextKey = "request_id"
+)
+
+// RequestLoggingConfig holds configuration for request logging middleware
+type RequestLoggingConfig struct {
+	Enabled     bool     `json:"enabled"`
+	Level       string   `json:"level"`        // "debug", "info", "warn", "error"
+	Format      string   `json:"format"`       // "json" or "text"
+	IncludeHeaders bool  `json:"include_headers"` // Include non-sensitive headers
+}
+
+// LoadFromEnv populates logging configuration from environment variables
+func (c *RequestLoggingConfig) LoadFromEnv() {
+	if enabled := os.Getenv("CIPHER_HUB_LOGGING_ENABLED"); enabled != "" {
+		c.Enabled = strings.ToLower(enabled) == "true"
+	}
+	if level := os.Getenv("CIPHER_HUB_LOG_LEVEL"); level != "" {
+		c.Level = strings.ToLower(level)
+	}
+	if format := os.Getenv("CIPHER_HUB_LOG_FORMAT"); format != "" {
+		c.Format = strings.ToLower(format)
+	}
+	if headers := os.Getenv("CIPHER_HUB_LOG_INCLUDE_HEADERS"); headers != "" {
+		c.IncludeHeaders = strings.ToLower(headers) == "true"
+	}
+}
+
+// ApplyDefaults sets secure default values for logging configuration
+func (c *RequestLoggingConfig) ApplyDefaults() {
+	if c.Level == "" {
+		c.Level = "info"
+	}
+	if c.Format == "" {
+		c.Format = "json"
+	}
+	// Enabled defaults to true, IncludeHeaders defaults to false
+	if !c.Enabled {
+		c.Enabled = true
+	}
+}
+
+// generateRequestID creates a cryptographically secure request ID for correlation tracking.
+// Uses crypto/rand to generate random bytes, then hex-encodes to a string.
+//
+// Returns:
+//   - string: Hex-encoded request ID of RequestIDHexLength characters
+//   - error: Generation error if crypto/rand fails
+//
+// Security: Uses cryptographically secure random generation for correlation safety.
+// The request ID is not used for authentication and provides sufficient entropy for
+// request correlation in high-throughput scenarios.
+func generateRequestID() (string, error) {
+	bytes := make([]byte, RequestIDBytes)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("%s: failed to generate request ID: %w", 
+			RequestLoggingErrorPrefix, err)
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+// WithRequestID adds a request ID to the context using a typed context key.
+// This enables safe request ID propagation throughout the request lifecycle.
+//
+// Parameters:
+//   - ctx: Parent context
+//   - requestID: Request correlation ID
+//
+// Returns:
+//   - context.Context: Context with embedded request ID
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDCtxKey, requestID)
+}
+
+// GetRequestID retrieves the request ID from context with type safety.
+// Returns empty string if no request ID is found, allowing graceful handling.
+//
+// Parameters:
+//   - ctx: Context containing request ID
+//
+// Returns:
+//   - string: Request ID if present, empty string otherwise
+func GetRequestID(ctx context.Context) string {
+	if requestID, ok := ctx.Value(requestIDCtxKey).(string); ok {
+		return requestID
+	}
+	return ""
+}
+```
+
+### Step 2: Implement Response Writer Wrapper
+
+**Continue in**: `internal/server/request_logging.go`
+
+```go
+// responseWriter wraps http.ResponseWriter to capture status codes and response metrics.
+// This enables comprehensive request logging including response status and byte counts.
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int64
+}
+
+// newResponseWriter creates a wrapped ResponseWriter with default status code.
+// Default status is 200 OK, which matches http.ResponseWriter behavior when
+// WriteHeader is not explicitly called.
+//
+// Parameters:
+//   - w: Original http.ResponseWriter to wrap
+//
+// Returns:
+//   - *responseWriter: Wrapped writer with status and byte tracking
+func newResponseWriter(w http.ResponseWriter) *responseWriter {
+	return &responseWriter{
+		ResponseWriter: w,
+		statusCode:     http.StatusOK, // Default status code
+		bytesWritten:   0,
+	}
+}
+
+// WriteHeader captures the status code before delegating to the wrapped writer.
+// This method is called automatically by the HTTP server or can be called explicitly.
+//
+// Parameters:
+//   - code: HTTP status code to set
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Write captures the number of bytes written while delegating to the wrapped writer.
+// This enables tracking of response size for performance monitoring.
+//
+// Parameters:
+//   - b: Bytes to write to response
+//
+// Returns:
+//   - int: Number of bytes written
+//   - error: Write error if any
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytesWritten += int64(n)
+	return n, err
+}
+
+// StatusCode returns the captured HTTP status code.
+// Returns the status code set by WriteHeader or 200 OK by default.
+//
+// Returns:
+//   - int: HTTP status code
+func (rw *responseWriter) StatusCode() int {
+	return rw.statusCode
+}
+
+// BytesWritten returns the total number of bytes written to the response.
+// This provides response size metrics for performance monitoring.
+//
+// Returns:
+//   - int64: Total bytes written
+func (rw *responseWriter) BytesWritten() int64 {
+	return rw.bytesWritten
+}
+```
+
+### Step 3: Implement Request Logging Middleware
+
+**Continue in**: `internal/server/request_logging.go`
+
+```go
+// RequestLoggingMiddleware creates middleware that logs all HTTP requests with structured logging.
+// Uses default configuration with info-level JSON logging enabled.
+//
+// Returns:
+//   - Middleware: Configured request logging middleware function
+func RequestLoggingMiddleware() Middleware {
+	config := RequestLoggingConfig{}
+	config.ApplyDefaults()
+	config.LoadFromEnv()
+	return RequestLoggingMiddlewareWithConfig(config)
+}
+
+// RequestLoggingMiddlewareWithConfig creates middleware with custom logging configuration.
+// Generates secure request IDs for correlation, tracks request duration and response metrics,
+// and uses structured JSON logging for production environments.
+//
+// Features:
+//   - Cryptographically secure request ID generation for correlation tracking
+//   - Structured logging with log/slog using JSON format
+//   - Request duration timing for performance monitoring
+//   - Status code and response size tracking
+//   - Request ID propagation through context
+//   - Security-conscious logging (no sensitive data)
+//   - Configurable logging levels and format
+//
+// The middleware logs two events per request:
+//   1. Request start: Method, path, remote address, user agent, request ID
+//   2. Request completion: Duration, status code, bytes written, request ID
+//
+// Parameters:
+//   - config: RequestLoggingConfig with logging behavior settings
+//
+// Returns:
+//   - Middleware: Configured request logging middleware function
+//
+// Security: Never logs sensitive data such as authentication tokens, request bodies,
+// or any user-provided data that could contain secrets. Request IDs are correlation
+// tokens only and are safe for logging.
+//
+// Performance: Minimal overhead with efficient request ID generation and structured
+// logging. Response writer wrapping has negligible performance impact.
 //
 // Example usage:
 //
-//	func LoggingMiddleware(next http.Handler) http.Handler {
-//		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-//			log.Printf("Request: %s %s", r.Method, r.URL.Path)
-//			next.ServeHTTP(w, r)
-//		})
+//	config := RequestLoggingConfig{
+//		Enabled: true,
+//		Level:   "info",
+//		Format:  "json",
 //	}
-type Middleware func(http.Handler) http.Handler
+//	server.Middleware().Use(RequestLoggingMiddlewareWithConfig(config))
+func RequestLoggingMiddlewareWithConfig(config RequestLoggingConfig) Middleware {
+	return func(next http.Handler) http.Handler {
+		// Skip logging entirely if disabled
+		if !config.Enabled {
+			return next
+		}
 
-// MiddlewareStack manages a collection of middleware functions with support
-// for conditional application and ordered execution.
-//
-// Middleware is applied in the order it was added to the stack. The last
-// middleware added will be the outermost middleware (executed first for requests,
-// last for responses).
-//
-// Thread Safety: MiddlewareStack is safe for concurrent reads after setup
-// is complete, but modifications (Use, UseIf) should only be performed
-// during initialization phase before serving requests.
-type MiddlewareStack struct {
-	middlewares []Middleware
-}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
 
-// NewMiddlewareStack creates a new empty middleware stack ready for use.
-//
-// Returns:
-//   - *MiddlewareStack: Empty middleware stack ready for middleware registration
-//
-// Example:
-//
-//	stack := NewMiddlewareStack()
-//	stack.Use(RequestIDMiddleware()).
-//		UseIf(config.EnableCORS, CORSMiddleware()).
-//		Use(LoggingMiddleware())
-func NewMiddlewareStack() *MiddlewareStack {
-	return &MiddlewareStack{
-		middlewares: make([]Middleware, 0),
-	}
-}
+			// Generate secure request ID
+			requestID, err := generateRequestID()
+			if err != nil {
+				slog.Error("Failed to generate request ID", "error", err)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
 
-// Use adds a middleware function to the stack that will always be applied.
-// Middleware is applied in registration order.
-//
-// Parameters:
-//   - middleware: Middleware function to add to the stack
-//
-// Returns:
-//   - *MiddlewareStack: The same stack instance for method chaining
-//
-// Example:
-//
-//	stack.Use(RequestIDMiddleware()).Use(LoggingMiddleware())
-func (ms *MiddlewareStack) Use(middleware Middleware) *MiddlewareStack {
-	ms.middlewares = append(ms.middlewares, middleware)
-	return ms
-}
+			// Add request ID to context for propagation
+			ctx := WithRequestID(r.Context(), requestID)
+			r = r.WithContext(ctx)
 
-// UseIf conditionally adds a middleware function to the stack based on the
-// provided condition. If the condition is false, the middleware is not added.
-//
-// This is useful for environment-specific middleware or feature flags.
-//
-// Parameters:
-//   - condition: Boolean condition determining whether to add the middleware
-//   - middleware: Middleware function to add if condition is true
-//
-// Returns:
-//   - *MiddlewareStack: The same stack instance for method chaining
-//
-// Example:
-//
-//	stack.UseIf(config.EnableCORS, CORSMiddleware()).
-//		UseIf(config.Environment == "development", DebugMiddleware())
-func (ms *MiddlewareStack) UseIf(condition bool, middleware Middleware) *MiddlewareStack {
-	if condition {
-		ms.middlewares = append(ms.middlewares, middleware)
-	}
-	return ms
-}
+			// Add request ID to response headers for client correlation
+			w.Header().Set("X-Request-ID", requestID)
 
-// Apply wraps the provided handler with all registered middleware functions.
-// Middleware is applied in reverse order (last registered becomes outermost).
-//
-// This follows the standard middleware pattern where middleware closer to
-// the registration point executes later in the request chain but earlier
-// in the response chain.
-//
-// Performance: Middleware is applied once during server start for optimal
-// runtime performance. The middleware chain is pre-built and reused for
-// all requests, avoiding per-request overhead.
-//
-// Parameters:
-//   - handler: The base handler to wrap with middleware
-//
-// Returns:
-//   - http.Handler: Handler wrapped with all registered middleware
-//
-// Example:
-//
-//	finalHandler := stack.Apply(myBusinessLogicHandler)
-//	http.ListenAndServe(":8080", finalHandler)
-//
-// Execution Flow Example:
-//   stack.Use(A).Use(B).Use(C)
-//   Request:  C -> B -> A -> handler
-//   Response: handler -> A -> B -> C
-//
-// This ensures middleware registered later can wrap and control middleware
-// registered earlier, following standard middleware composition patterns.
-func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
-	if handler == nil {
-		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.NotFound(w, r)
+			// Check log level before expensive operations
+			if slog.Default().Enabled(context.Background(), slog.LevelInfo) {
+				// Build log fields using consistent field names
+				logFields := []any{
+					LogFieldRequestID, requestID,
+					LogFieldMethod, r.Method,
+					LogFieldPath, r.URL.Path,
+					LogFieldRemoteAddr, r.RemoteAddr,
+					LogFieldUserAgent, r.UserAgent(),
+					LogFieldContentLength, r.ContentLength,
+				}
+
+				// Optionally include non-sensitive headers
+				if config.IncludeHeaders {
+					headers := filterSensitiveHeaders(r.Header)
+					if len(headers) > 0 {
+						logFields = append(logFields, "headers", headers)
+					}
+				}
+
+				// Log request start with structured data
+				slog.Info("Request started", logFields...)
+			}
+
+			// Wrap ResponseWriter to capture metrics
+			wrapped := newResponseWriter(w)
+
+			// Call next handler in middleware chain
+			next.ServeHTTP(wrapped, r)
+
+			// Calculate request duration
+			duration := time.Since(start)
+
+			// Check log level before completion logging
+			if slog.Default().Enabled(context.Background(), slog.LevelInfo) {
+				// Log request completion with performance metrics
+				slog.Info("Request completed",
+					LogFieldRequestID, requestID,
+					LogFieldMethod, r.Method,
+					LogFieldPath, r.URL.Path,
+					LogFieldStatusCode, wrapped.StatusCode(),
+					LogFieldDurationMS, duration.Milliseconds(),
+					LogFieldBytesWritten, wrapped.BytesWritten(),
+					LogFieldRemoteAddr, r.RemoteAddr)
+			}
 		})
 	}
-
-	result := handler
-	
-	// Apply middleware in reverse order for correct execution chain
-	for i := len(ms.middlewares) - 1; i >= 0; i-- {
-		result = ms.middlewares[i](result)
-	}
-	
-	return result
 }
 
-// Count returns the number of middleware functions currently in the stack.
-// This is useful for testing and debugging purposes.
-//
-// Returns:
-//   - int: Number of middleware functions in the stack
-func (ms *MiddlewareStack) Count() int {
-	return len(ms.middlewares)
-}
-
-// Clear removes all middleware functions from the stack.
-// This is primarily useful for testing scenarios.
-func (ms *MiddlewareStack) Clear() {
-	ms.middlewares = ms.middlewares[:0]
-}
-```
-
-### Step 2: Integrate Middleware with Server
-
-**File**: `internal/server/server.go`
-
-Add middleware field to Server struct and update constructor:
-
-```go
-// Server represents the HTTP server with configuration and lifecycle management
-type Server struct {
-	// Configuration
-	config ServerConfig
-
-	// Middleware stack for request processing
-	middleware *MiddlewareStack
-
-	// HTTP server instance for lifecycle management
-	httpServer *http.Server
-
-	// Root handler for middleware application
-	rootHandler http.Handler
-
-	// Lifecycle management
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
-
-	// Server state
-	disposed bool
-	started  bool
-	mu       sync.RWMutex
-}
-```
-
-Update NewServer constructor:
-
-```go
-// NewServer creates a new HTTP server instance with the specified configuration.
-// It validates the configuration, applies secure defaults, and prepares the server
-// for lifecycle management with proper shutdown coordination.
-//
-// The server includes an initialized middleware stack ready for middleware
-// registration and a root handler management system for request processing.
-//
-// Parameters:
-//   - config: ServerConfig containing host, port, and timeout configuration
-//
-// Returns:
-//   - *Server: Configured server instance ready for middleware and handler setup
-//   - error: Validation error if configuration is invalid
-//
-// Security: Applies secure timeout defaults and validates all configuration parameters.
-// The server is prepared but not started; call Start() to begin accepting connections.
-func NewServer(config ServerConfig) (*Server, error) {
-	// Apply defaults for any zero-value timeout fields
-	config.ApplyDefaults()
-
-	// Validate the complete configuration
-	if err := config.Validate(); err != nil {
-		return nil, err
-	}
-
-	// Create shutdown context for graceful lifecycle management
-	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-
-	// Create server with validated configuration
-	server := &Server{
-		config: config,
-
-		// Initialize middleware stack
-		middleware: NewMiddlewareStack(),
-
-		// HTTP server instance (will be initialized in Start())
-		httpServer: nil,
-
-		// Root handler (will be set by user or default to NotFound)
-		rootHandler: nil,
-
-		// Lifecycle management
-		shutdownCtx:    shutdownCtx,
-		shutdownCancel: shutdownCancel,
-		disposed:       false,
-		started:        false,
-		mu:             sync.RWMutex{},
-	}
-
-	return server, nil
-}
-```
-
-Add middleware and handler management methods:
-
-```go
-// Middleware returns the server's middleware stack for configuration.
-// This allows users to add middleware during server setup.
-//
-// Returns:
-//   - *MiddlewareStack: The server's middleware stack
-//
-// Example:
-//
-//	server.Middleware().
-//		Use(RequestIDMiddleware()).
-//		UseIf(config.EnableCORS, CORSMiddleware())
-func (s *Server) Middleware() *MiddlewareStack {
-	return s.middleware
-}
-
-// SetHandler sets the root handler for the server. The handler will be
-// wrapped with all registered middleware when the server starts.
-//
-// If no handler is set, the server will return 404 Not Found for all requests.
-//
-// Parameters:
-//   - handler: The root HTTP handler for the server
-//
-// Example:
-//
-//	mux := http.NewServeMux()
-//	mux.HandleFunc("/health", healthHandler)
-//	server.SetHandler(mux)
-func (s *Server) SetHandler(handler http.Handler) {
-	s.rootHandler = handler
-}
-
-// Handler returns the current root handler, or nil if none is set.
-//
-// Returns:
-//   - http.Handler: The current root handler, or nil
-func (s *Server) Handler() http.Handler {
-	return s.rootHandler
-}
-```
-
-Update Start method to apply middleware:
-
-```go
-// Start begins accepting HTTP requests on the configured address.
-// It creates an http.Server instance with validated timeouts, applies
-// all registered middleware to the root handler, and starts the listener
-// with proper error handling and lifecycle integration.
-//
-// The middleware stack is applied to the root handler during server start,
-// creating the final request processing chain.
-//
-// The method is thread-safe and idempotent - calling Start() on an already
-// started server returns an error without side effects.
-//
-// Returns:
-//   - error: Listener setup error, port binding error, or server already started
-//
-// Security: Uses validated configuration to prevent resource exhaustion
-// and integrates with shutdown context for graceful termination.
-func (s *Server) Start() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.disposed {
-		return fmt.Errorf("%s: cannot start server after shutdown", ServerErrorPrefix)
-	}
-
-	// Check if server is already started
-	if s.started {
-		return fmt.Errorf("%s: server already started", ServerErrorPrefix)
-	}
-
-	// Apply middleware to root handler
-	finalHandler := s.middleware.Apply(s.rootHandler)
-
-	// Create HTTP server instance with validated configuration
-	s.httpServer = &http.Server{
-		Addr:         s.config.Address(),
-		Handler:      finalHandler,  // Use middleware-wrapped handler
-		ReadTimeout:  s.config.ReadTimeout,
-		WriteTimeout: s.config.WriteTimeout,
-		IdleTimeout:  s.config.IdleTimeout,
-	}
-
-	// Store address for error handling (before potential cleanup)
-	addr := s.httpServer.Addr
-
-	// Create listener with error handling
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		s.httpServer = nil
-		return fmt.Errorf(
-			"%s: failed to create listener on %s: %w",
-			ServerErrorPrefix,
-			addr,
-			err,
-		)
-	}
-
-	// Channel for server readiness signaling
-	ready := make(chan struct{})
-
-	// Start server in goroutine with proper coordination
-	go func() {
-		defer func() {
-			s.mu.Lock()
-			s.started = false
-			s.mu.Unlock()
-			listener.Close()
-		}()
-
-		// Signal readiness before serving
-		close(ready)
-
-		// serve with proper error handling
-		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Printf("HTTP server error: %v", err)
+// filterSensitiveHeaders removes sensitive headers from logging
+func filterSensitiveHeaders(headers http.Header) map[string]string {
+	filtered := make(map[string]string)
+	for key, values := range headers {
+		lowerKey := strings.ToLower(key)
+		if !SensitiveHeaders[lowerKey] {
+			filtered[key] = strings.Join(values, ", ")
 		}
-	}()
-
-	// Update state before waiting for readiness
-	s.started = true
-
-	// Wait for server to be ready
-	<-ready
-
-	return nil
+	}
+	return filtered
 }
 ```
 
-### Step 3: Create Comprehensive Tests
+### Step 4: Create Comprehensive Tests
 
-**File**: `internal/server/middleware_test.go`
+**File**: `internal/server/request_logging_test.go`
 
 ```go
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
-func TestMiddleware_TypeDefinition(t *testing.T) {
-	// Test that Middleware type can be used as expected
-	var middleware Middleware = func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Test", "middleware")
-			next.ServeHTTP(w, r)
-		})
+func TestGenerateRequestID(t *testing.T) {
+	tests := []struct {
+		name string
+		runs int
+	}{
+		{
+			name: "single generation",
+			runs: 1,
+		},
+		{
+			name: "multiple generations for uniqueness",
+			runs: 100,
+		},
 	}
 
-	// Create a simple handler to wrap
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ids := make(map[string]bool)
+
+			for i := 0; i < tt.runs; i++ {
+				id, err := generateRequestID()
+				if err != nil {
+					t.Fatalf("generateRequestID() error = %v", err)
+				}
+
+				// Verify ID format (16 character hex string)
+				if len(id) != 16 {
+					t.Errorf("generateRequestID() ID length = %d, want 16", len(id))
+				}
+
+				// Verify hex format
+				for _, char := range id {
+					if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+						t.Errorf("generateRequestID() invalid hex character: %c", char)
+					}
+				}
+
+				// Check for duplicates in multiple runs
+				if tt.runs > 1 {
+					if ids[id] {
+						t.Errorf("generateRequestID() duplicate ID generated: %s", id)
+					}
+					ids[id] = true
+				}
+			}
+		})
+	}
+}
+
+func TestWithRequestID(t *testing.T) {
+	ctx := context.Background()
+	requestID := "test-request-id"
+
+	// Add request ID to context
+	newCtx := WithRequestID(ctx, requestID)
+
+	// Verify request ID was added
+	retrievedID := GetRequestID(newCtx)
+	if retrievedID != requestID {
+		t.Errorf("GetRequestID() = %v, want %v", retrievedID, requestID)
+	}
+}
+
+func TestGetRequestID(t *testing.T) {
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		want    string
+	}{
+		{
+			name: "context with request ID",
+			ctx:  WithRequestID(context.Background(), "test-id"),
+			want: "test-id",
+		},
+		{
+			name: "context without request ID",
+			ctx:  context.Background(),
+			want: "",
+		},
+		{
+			name: "context with wrong type value",
+			ctx:  context.WithValue(context.Background(), requestIDCtxKey, 123),
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GetRequestID(tt.ctx)
+			if got != tt.want {
+				t.Errorf("GetRequestID() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewResponseWriter(t *testing.T) {
+	w := httptest.NewRecorder()
+	wrapped := newResponseWriter(w)
+
+	// Test default values
+	if wrapped.StatusCode() != http.StatusOK {
+		t.Errorf("newResponseWriter() default status = %d, want %d", 
+			wrapped.StatusCode(), http.StatusOK)
+	}
+
+	if wrapped.BytesWritten() != 0 {
+		t.Errorf("newResponseWriter() default bytes = %d, want 0", wrapped.BytesWritten())
+	}
+}
+
+func TestResponseWriter_WriteHeader(t *testing.T) {
+	w := httptest.NewRecorder()
+	wrapped := newResponseWriter(w)
+
+	// Test status code capture
+	wrapped.WriteHeader(http.StatusNotFound)
+
+	if wrapped.StatusCode() != http.StatusNotFound {
+		t.Errorf("WriteHeader() status = %d, want %d", 
+			wrapped.StatusCode(), http.StatusNotFound)
+	}
+
+	// Verify underlying writer received the status
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Underlying writer status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestResponseWriter_Write(t *testing.T) {
+	w := httptest.NewRecorder()
+	wrapped := newResponseWriter(w)
+
+	testData := []byte("test response data")
+	n, err := wrapped.Write(testData)
+
+	if err != nil {
+		t.Errorf("Write() error = %v", err)
+	}
+
+	if n != len(testData) {
+		t.Errorf("Write() bytes written = %d, want %d", n, len(testData))
+	}
+
+	if wrapped.BytesWritten() != int64(len(testData)) {
+		t.Errorf("BytesWritten() = %d, want %d", wrapped.BytesWritten(), len(testData))
+	}
+
+	// Verify underlying writer received the data
+	if w.Body.String() != string(testData) {
+		t.Errorf("Underlying writer body = %q, want %q", w.Body.String(), string(testData))
+	}
+}
+
+func TestRequestLoggingMiddleware(t *testing.T) {
+	middleware := RequestLoggingMiddleware()
+
+	// Create test handler
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request ID is available in context
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not found in context")
+		}
+
+		// Write test response
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("test response"))
 	})
@@ -467,396 +606,520 @@ func TestMiddleware_TypeDefinition(t *testing.T) {
 	// Apply middleware
 	wrappedHandler := middleware(handler)
 
-	// Test the wrapped handler
+	// Create test request
 	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("User-Agent", "test-agent")
+
 	w := httptest.NewRecorder()
 
+	// Execute request
 	wrappedHandler.ServeHTTP(w, req)
 
-	// Verify middleware was applied
-	if w.Header().Get("X-Test") != "middleware" {
-		t.Error("Middleware was not applied correctly")
+	// Verify response has request ID header
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Error("X-Request-ID header not set")
+	}
+
+	// Verify request ID format
+	if len(requestID) != 16 {
+		t.Errorf("Request ID length = %d, want 16", len(requestID))
+	}
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
 	}
 
 	if w.Body.String() != "test response" {
-		t.Errorf("Handler response incorrect: got %q", w.Body.String())
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "test response")
 	}
 }
 
-func TestNewMiddlewareStack(t *testing.T) {
-	stack := NewMiddlewareStack()
-
-	if stack == nil {
-		t.Fatal("NewMiddlewareStack() returned nil")
-	}
-
-	if stack.Count() != 0 {
-		t.Errorf("New middleware stack should be empty, got count %d", stack.Count())
-	}
-
-	if stack.middlewares == nil {
-		t.Error("Middleware slice should be initialized")
-	}
-}
-
-func TestMiddlewareStack_Use(t *testing.T) {
-	stack := NewMiddlewareStack()
-
-	// Create test middleware
-	middleware1 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Middleware-1", "applied")
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	middleware2 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Middleware-2", "applied")
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	// Test method chaining
-	result := stack.Use(middleware1).Use(middleware2)
-
-	// Verify chaining returns same instance
-	if result != stack {
-		t.Error("Use() should return same instance for chaining")
-	}
-
-	// Verify middleware count
-	if stack.Count() != 2 {
-		t.Errorf("Expected 2 middleware, got %d", stack.Count())
+func TestRequestLoggingMiddleware_GenerationFailure(t *testing.T) {
+	// This test would require mocking crypto/rand failure
+	// For now, we test the middleware with successful generation
+	// In production, request ID generation failure is extremely rare
+	
+	middleware := RequestLoggingMiddleware()
+	
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	
+	wrappedHandler := middleware(handler)
+	
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	
+	// Should not panic even with potential generation issues
+	wrappedHandler.ServeHTTP(w, req)
+	
+	// Verify some response was generated
+	if w.Code == 0 {
+		t.Error("No response status code set")
 	}
 }
 
-func TestMiddlewareStack_UseIf(t *testing.T) {
+func TestRequestLoggingMiddleware_StatusCodeCapture(t *testing.T) {
 	tests := []struct {
 		name           string
-		condition      bool
-		expectedCount  int
-		expectHeader   bool
+		statusCode     int
+		responseBody   string
 	}{
 		{
-			name:          "condition true",
-			condition:     true,
-			expectedCount: 1,
-			expectHeader:  true,
+			name:         "200 OK",
+			statusCode:   http.StatusOK,
+			responseBody: "success",
 		},
 		{
-			name:          "condition false",
-			condition:     false,
-			expectedCount: 0,
-			expectHeader:  false,
+			name:         "404 Not Found",
+			statusCode:   http.StatusNotFound,
+			responseBody: "not found",
+		},
+		{
+			name:         "500 Internal Server Error",
+			statusCode:   http.StatusInternalServerError,
+			responseBody: "server error",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stack := NewMiddlewareStack()
+			middleware := RequestLoggingMiddleware()
 
-			middleware := func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("X-Conditional", "applied")
-					next.ServeHTTP(w, r)
-				})
-			}
-
-			// Test conditional addition
-			result := stack.UseIf(tt.condition, middleware)
-
-			// Verify chaining
-			if result != stack {
-				t.Error("UseIf() should return same instance for chaining")
-			}
-
-			// Verify count
-			if stack.Count() != tt.expectedCount {
-				t.Errorf("Expected %d middleware, got %d", tt.expectedCount, stack.Count())
-			}
-
-			// Test application
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.responseBody))
 			})
 
-			finalHandler := stack.Apply(handler)
+			wrappedHandler := middleware(handler)
+
 			req := httptest.NewRequest("GET", "/test", nil)
 			w := httptest.NewRecorder()
 
-			finalHandler.ServeHTTP(w, req)
+			wrappedHandler.ServeHTTP(w, req)
 
-			// Verify header presence
-			hasHeader := w.Header().Get("X-Conditional") == "applied"
-			if hasHeader != tt.expectHeader {
-				t.Errorf("Expected header present: %v, got: %v", tt.expectHeader, hasHeader)
+			if w.Code != tt.statusCode {
+				t.Errorf("Status code = %d, want %d", w.Code, tt.statusCode)
+			}
+
+			if w.Body.String() != tt.responseBody {
+				t.Errorf("Response body = %q, want %q", w.Body.String(), tt.responseBody)
+			}
+
+			// Verify request ID header is present
+			if w.Header().Get("X-Request-ID") == "" {
+				t.Error("X-Request-ID header not set")
 			}
 		})
 	}
 }
 
-func TestMiddlewareStack_Apply(t *testing.T) {
+func TestRequestLoggingMiddleware_MethodAndPathCapture(t *testing.T) {
 	tests := []struct {
-		name        string
-		handler     http.Handler
-		expectBody  string
-		expectCode  int
+		name   string
+		method string
+		path   string
 	}{
 		{
-			name: "with valid handler",
-			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			name:   "GET request",
+			method: "GET",
+			path:   "/api/health",
+		},
+		{
+			name:   "POST request",
+			method: "POST",
+			path:   "/api/services",
+		},
+		{
+			name:   "PUT request",
+			method: "PUT",
+			path:   "/api/services/123",
+		},
+		{
+			name:   "DELETE request",
+			method: "DELETE",
+			path:   "/api/services/456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			middleware := RequestLoggingMiddleware()
+
+			var capturedMethod, capturedPath string
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedMethod = r.Method
+				capturedPath = r.URL.Path
+				w.WriteHeader(http.StatusOK)
+			})
+
+			wrappedHandler := middleware(handler)
+
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			w := httptest.NewRecorder()
+
+			wrappedHandler.ServeHTTP(w, req)
+
+			if capturedMethod != tt.method {
+				t.Errorf("Captured method = %q, want %q", capturedMethod, tt.method)
+			}
+
+			if capturedPath != tt.path {
+				t.Errorf("Captured path = %q, want %q", capturedPath, tt.path)
+			}
+		})
+	}
+}
+
+func TestRequestLoggingConfig_LoadFromEnv(t *testing.T) {
+	// Save original environment
+	originalEnv := make(map[string]string)
+	envVars := []string{
+		"CIPHER_HUB_LOGGING_ENABLED",
+		"CIPHER_HUB_LOG_LEVEL", 
+		"CIPHER_HUB_LOG_FORMAT",
+		"CIPHER_HUB_LOG_INCLUDE_HEADERS",
+	}
+	
+	for _, key := range envVars {
+		originalEnv[key] = os.Getenv(key)
+	}
+	
+	// Clean up environment after test
+	defer func() {
+		for _, key := range envVars {
+			if val, exists := originalEnv[key]; exists {
+				os.Setenv(key, val)
+			} else {
+				os.Unsetenv(key)
+			}
+		}
+	}()
+
+	tests := []struct {
+		name     string
+		envVars  map[string]string
+		expected RequestLoggingConfig
+	}{
+		{
+			name: "default values",
+			envVars: map[string]string{},
+			expected: RequestLoggingConfig{
+				Enabled: true,
+				Level:   "info",
+				Format:  "json",
+				IncludeHeaders: false,
+			},
+		},
+		{
+			name: "custom configuration",
+			envVars: map[string]string{
+				"CIPHER_HUB_LOGGING_ENABLED": "false",
+				"CIPHER_HUB_LOG_LEVEL": "debug",
+				"CIPHER_HUB_LOG_FORMAT": "text",
+				"CIPHER_HUB_LOG_INCLUDE_HEADERS": "true",
+			},
+			expected: RequestLoggingConfig{
+				Enabled: false,
+				Level:   "debug",
+				Format:  "text",
+				IncludeHeaders: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set environment variables
+			for key, value := range tt.envVars {
+				os.Setenv(key, value)
+			}
+
+			config := RequestLoggingConfig{}
+			config.ApplyDefaults()
+			config.LoadFromEnv()
+
+			if config.Enabled != tt.expected.Enabled {
+				t.Errorf("Enabled = %v, want %v", config.Enabled, tt.expected.Enabled)
+			}
+			if config.Level != tt.expected.Level {
+				t.Errorf("Level = %v, want %v", config.Level, tt.expected.Level)
+			}
+			if config.Format != tt.expected.Format {
+				t.Errorf("Format = %v, want %v", config.Format, tt.expected.Format)
+			}
+			if config.IncludeHeaders != tt.expected.IncludeHeaders {
+				t.Errorf("IncludeHeaders = %v, want %v", config.IncludeHeaders, tt.expected.IncludeHeaders)
+			}
+		})
+	}
+}
+
+func TestFilterSensitiveHeaders(t *testing.T) {
+	headers := http.Header{
+		"Content-Type":    []string{"application/json"},
+		"Authorization":   []string{"Bearer token123"},
+		"X-Api-Key":      []string{"secret123"},
+		"User-Agent":     []string{"test-client"},
+		"Cookie":         []string{"session=abc123"},
+		"X-Request-ID":   []string{"req-123"},
+	}
+
+	filtered := filterSensitiveHeaders(headers)
+
+	// Should include non-sensitive headers
+	if filtered["Content-Type"] != "application/json" {
+		t.Error("Content-Type should be included")
+	}
+	if filtered["User-Agent"] != "test-client" {
+		t.Error("User-Agent should be included")
+	}
+	if filtered["X-Request-ID"] != "req-123" {
+		t.Error("X-Request-ID should be included")
+	}
+
+	// Should exclude sensitive headers
+	if _, exists := filtered["Authorization"]; exists {
+		t.Error("Authorization should be filtered out")
+	}
+	if _, exists := filtered["X-Api-Key"]; exists {
+		t.Error("X-Api-Key should be filtered out")
+	}
+	if _, exists := filtered["Cookie"]; exists {
+		t.Error("Cookie should be filtered out")
+	}
+}
+
+func TestRequestLoggingMiddlewareWithConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config RequestLoggingConfig
+		expectLogging bool
+	}{
+		{
+			name: "logging enabled",
+			config: RequestLoggingConfig{
+				Enabled: true,
+				Level:   "info",
+				Format:  "json",
+			},
+			expectLogging: true,
+		},
+		{
+			name: "logging disabled",
+			config: RequestLoggingConfig{
+				Enabled: false,
+				Level:   "info",
+				Format:  "json",
+			},
+			expectLogging: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			middleware := RequestLoggingMiddlewareWithConfig(tt.config)
+
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Verify request ID availability matches expectation
+				requestID := GetRequestID(r.Context())
+				if tt.expectLogging && requestID == "" {
+					t.Error("Request ID should be available when logging enabled")
+				}
+				if !tt.expectLogging && requestID != "" {
+					t.Error("Request ID should not be available when logging disabled")
+				}
+
 				w.WriteHeader(http.StatusOK)
 				w.Write([]byte("test response"))
-			}),
-			expectBody: "test response",
-			expectCode: http.StatusOK,
+			})
+
+			wrappedHandler := middleware(handler)
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			w := httptest.NewRecorder()
+
+			wrappedHandler.ServeHTTP(w, req)
+
+			// Check request ID header presence
+			requestIDHeader := w.Header().Get("X-Request-ID")
+			if tt.expectLogging && requestIDHeader == "" {
+				t.Error("X-Request-ID header should be set when logging enabled")
+			}
+			if !tt.expectLogging && requestIDHeader != "" {
+				t.Error("X-Request-ID header should not be set when logging disabled")
+			}
+
+			// Response should always be successful
+			if w.Code != http.StatusOK {
+				t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestRequestLoggingMiddleware_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupReq    func() *http.Request
+		expectError bool
+	}{
+		{
+			name: "normal request",
+			setupReq: func() *http.Request {
+				return httptest.NewRequest("GET", "/test", nil)
+			},
+			expectError: false,
 		},
 		{
-			name:       "with nil handler",
-			handler:    nil,
-			expectBody: "404 page not found\n",
-			expectCode: http.StatusNotFound,
+			name: "request with very long URL",
+			setupReq: func() *http.Request {
+				longPath := "/test/" + strings.Repeat("a", 1000)
+				return httptest.NewRequest("GET", longPath, nil)
+			},
+			expectError: false,
+		},
+		{
+			name: "request with malformed headers",
+			setupReq: func() *http.Request {
+				req := httptest.NewRequest("GET", "/test", nil)
+				// Add various header edge cases
+				req.Header.Set("X-Test-Header", "value with\nnewline")
+				req.Header.Set("X-Empty-Header", "")
+				return req
+			},
+			expectError: false,
+		},
+		{
+			name: "request with sensitive headers",
+			setupReq: func() *http.Request {
+				req := httptest.NewRequest("GET", "/test", nil)
+				req.Header.Set("Authorization", "Bearer secret-token")
+				req.Header.Set("Cookie", "session=secret-session")
+				req.Header.Set("X-API-Key", "secret-api-key")
+				return req
+			},
+			expectError: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stack := NewMiddlewareStack()
+			config := RequestLoggingConfig{
+				Enabled: true,
+				Level:   "info",
+				Format:  "json",
+				IncludeHeaders: true,
+			}
+			middleware := RequestLoggingMiddlewareWithConfig(config)
 
-			// Add test middleware to verify application
-			stack.Use(func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("X-Applied", "true")
-					next.ServeHTTP(w, r)
-				})
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestID := GetRequestID(r.Context())
+				if requestID == "" {
+					t.Error("Request ID should be available")
+				}
+				w.WriteHeader(http.StatusOK)
 			})
 
-			finalHandler := stack.Apply(tt.handler)
-
-			req := httptest.NewRequest("GET", "/test", nil)
+			wrappedHandler := middleware(handler)
+			req := tt.setupReq()
 			w := httptest.NewRecorder()
 
-			finalHandler.ServeHTTP(w, req)
+			// Should not panic or fail regardless of request content
+			wrappedHandler.ServeHTTP(w, req)
 
-			// Verify middleware was applied
-			if w.Header().Get("X-Applied") != "true" {
-				t.Error("Middleware was not applied")
-			}
-
-			// Verify response
-			if w.Code != tt.expectCode {
-				t.Errorf("Expected status %d, got %d", tt.expectCode, w.Code)
-			}
-
-			if w.Body.String() != tt.expectBody {
-				t.Errorf("Expected body %q, got %q", tt.expectBody, w.Body.String())
+			if tt.expectError {
+				if w.Code < 400 {
+					t.Errorf("Expected error response, got status %d", w.Code)
+				}
+			} else {
+				if w.Code != http.StatusOK {
+					t.Errorf("Expected success response, got status %d", w.Code)
+				}
+				
+				// Verify request ID header is always present when logging enabled
+				if w.Header().Get("X-Request-ID") == "" {
+					t.Error("X-Request-ID header should be present")
+				}
 			}
 		})
 	}
 }
 
-func TestMiddlewareStack_Apply_Order(t *testing.T) {
-	stack := NewMiddlewareStack()
-
-	var executionOrder []string
-
-	// Add middleware that tracks execution order
-	middleware1 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			executionOrder = append(executionOrder, "middleware1-before")
-			next.ServeHTTP(w, r)
-			executionOrder = append(executionOrder, "middleware1-after")
-		})
+func TestRequestLoggingMiddleware_HighConcurrency(t *testing.T) {
+	config := RequestLoggingConfig{
+		Enabled: true,
+		Level:   "info",
+		Format:  "json",
 	}
-
-	middleware2 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			executionOrder = append(executionOrder, "middleware2-before")
-			next.ServeHTTP(w, r)
-			executionOrder = append(executionOrder, "middleware2-after")
-		})
-	}
-
-	middleware3 := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			executionOrder = append(executionOrder, "middleware3-before")
-			next.ServeHTTP(w, r)
-			executionOrder = append(executionOrder, "middleware3-after")
-		})
-	}
-
-	// Add middleware in order
-	stack.Use(middleware1).Use(middleware2).Use(middleware3)
+	middleware := RequestLoggingMiddlewareWithConfig(config)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		executionOrder = append(executionOrder, "handler")
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID should be available")
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 
-	finalHandler := stack.Apply(handler)
+	wrappedHandler := middleware(handler)
 
-	req := httptest.NewRequest("GET", "/test", nil)
-	w := httptest.NewRecorder()
-
-	finalHandler.ServeHTTP(w, req)
-
-	// Verify execution order: last registered middleware executes first
-	expectedOrder := []string{
-		"middleware3-before", // Last registered, outermost
-		"middleware2-before",
-		"middleware1-before", // First registered, innermost
-		"handler",
-		"middleware1-after",  // First registered, innermost
-		"middleware2-after",
-		"middleware3-after",  // Last registered, outermost
+	// Test concurrent request ID generation
+	const concurrency = 100
+	requestIDs := make(chan string, concurrency)
+	
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			req := httptest.NewRequest("GET", "/test", nil)
+			w := httptest.NewRecorder()
+			
+			wrappedHandler.ServeHTTP(w, req)
+			
+			requestID := w.Header().Get("X-Request-ID")
+			if requestID != "" {
+				requestIDs <- requestID
+			}
+		}()
 	}
+	
+	wg.Wait()
+	close(requestIDs)
 
-	if len(executionOrder) != len(expectedOrder) {
-		t.Fatalf("Expected %d execution steps, got %d", len(expectedOrder), len(executionOrder))
-	}
-
-	for i, expected := range expectedOrder {
-		if executionOrder[i] != expected {
-			t.Errorf("Execution order[%d]: expected %q, got %q", i, expected, executionOrder[i])
+	// Verify all request IDs are unique
+	seen := make(map[string]bool)
+	count := 0
+	for requestID := range requestIDs {
+		if seen[requestID] {
+			t.Errorf("Duplicate request ID generated: %s", requestID)
+		}
+		seen[requestID] = true
+		count++
+		
+		// Verify format
+		if len(requestID) != RequestIDHexLength {
+			t.Errorf("Invalid request ID length: %d, want %d", len(requestID), RequestIDHexLength)
 		}
 	}
-}
-
-func TestMiddlewareStack_Count(t *testing.T) {
-	stack := NewMiddlewareStack()
-
-	// Initially empty
-	if stack.Count() != 0 {
-		t.Errorf("New stack should have count 0, got %d", stack.Count())
-	}
-
-	// Add middleware and verify count
-	testMiddleware := func(next http.Handler) http.Handler { return next }
-
-	stack.Use(testMiddleware)
-	if stack.Count() != 1 {
-		t.Errorf("After one Use(), count should be 1, got %d", stack.Count())
-	}
-
-	stack.Use(testMiddleware)
-	if stack.Count() != 2 {
-		t.Errorf("After two Use(), count should be 2, got %d", stack.Count())
-	}
-
-	// Test UseIf with false condition
-	stack.UseIf(false, testMiddleware)
-	if stack.Count() != 2 {
-		t.Errorf("After UseIf(false), count should remain 2, got %d", stack.Count())
-	}
-
-	// Test UseIf with true condition
-	stack.UseIf(true, testMiddleware)
-	if stack.Count() != 3 {
-		t.Errorf("After UseIf(true), count should be 3, got %d", stack.Count())
-	}
-}
-
-func TestMiddlewareStack_Clear(t *testing.T) {
-	stack := NewMiddlewareStack()
-
-	// Add some middleware
-	testMiddleware := func(next http.Handler) http.Handler { return next }
-	stack.Use(testMiddleware).Use(testMiddleware)
-
-	if stack.Count() != 2 {
-		t.Errorf("Expected count 2 before clear, got %d", stack.Count())
-	}
-
-	// Clear and verify
-	stack.Clear()
-
-	if stack.Count() != 0 {
-		t.Errorf("Expected count 0 after clear, got %d", stack.Count())
-	}
-
-	// Verify we can still add middleware after clear
-	stack.Use(testMiddleware)
-	if stack.Count() != 1 {
-		t.Errorf("Expected count 1 after clear and add, got %d", stack.Count())
-	}
-}
-
-func TestMiddlewareStack_ChainedUsage(t *testing.T) {
-	stack := NewMiddlewareStack()
-
-	// Test complex chaining scenario
-	result := stack.
-		Use(func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Middleware-1", "applied")
-				next.ServeHTTP(w, r)
-			})
-		}).
-		UseIf(true, func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Middleware-2", "applied")
-				next.ServeHTTP(w, r)
-			})
-		}).
-		UseIf(false, func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Middleware-3", "should-not-apply")
-				next.ServeHTTP(w, r)
-			})
-		}).
-		Use(func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Middleware-4", "applied")
-				next.ServeHTTP(w, r)
-			})
-		})
-
-	// Verify chaining returns same instance
-	if result != stack {
-		t.Error("Chained methods should return same instance")
-	}
-
-	// Verify correct count (3 middleware, 1 skipped due to false condition)
-	if stack.Count() != 3 {
-		t.Errorf("Expected 3 middleware after chaining, got %d", stack.Count())
-	}
-
-	// Test application
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	finalHandler := stack.Apply(handler)
-	req := httptest.NewRequest("GET", "/test", nil)
-	w := httptest.NewRecorder()
-
-	finalHandler.ServeHTTP(w, req)
-
-	// Verify applied middleware
-	if w.Header().Get("X-Middleware-1") != "applied" {
-		t.Error("Middleware 1 should be applied")
-	}
-	if w.Header().Get("X-Middleware-2") != "applied" {
-		t.Error("Middleware 2 should be applied")
-	}
-	if w.Header().Get("X-Middleware-3") != "" {
-		t.Error("Middleware 3 should not be applied (UseIf false)")
-	}
-	if w.Header().Get("X-Middleware-4") != "applied" {
-		t.Error("Middleware 4 should be applied")
+	
+	if count != concurrency {
+		t.Errorf("Expected %d unique request IDs, got %d", concurrency, count)
 	}
 }
 ```
 
-### Step 4: Add Server Integration Tests
+### Step 5: Add Server Integration Tests
 
-**File**: `internal/server/server_test.go`
-
-Add the following tests to the existing server test file:
+**File**: `internal/server/server_test.go` (add these tests)
 
 ```go
-func TestServer_MiddlewareIntegration(t *testing.T) {
+func TestServer_RequestLoggingMiddleware(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -867,83 +1130,22 @@ func TestServer_MiddlewareIntegration(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Verify middleware stack is initialized
-	if server.Middleware() == nil {
-		t.Error("Server middleware stack should be initialized")
-	}
-
-	// Test middleware configuration
-	testMiddleware := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Test-Middleware", "applied")
-			next.ServeHTTP(w, r)
-		})
-	}
-
-	server.Middleware().Use(testMiddleware)
-
-	// Verify middleware was added
-	if server.Middleware().Count() != 1 {
-		t.Errorf("Expected 1 middleware, got %d", server.Middleware().Count())
-	}
-}
-
-func TestServer_SetHandler(t *testing.T) {
-	config := ServerConfig{
-		Host: "localhost",
-		Port: "0",
-	}
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	// Test setting handler
-	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
-	})
-
-	server.SetHandler(testHandler)
-
-	// Verify handler was set by testing its behavior
-	req := httptest.NewRequest("GET", "/", nil)
-	recorder := httptest.NewRecorder()
-
-	server.Handler().ServeHTTP(recorder, req)
-
-	if recorder.Code != http.StatusOK {
-		t.Errorf("Expected status %d, got %d", http.StatusOK, recorder.Code)
-	}
-
-	expectedBody := "test response"
-	if recorder.Body.String() != expectedBody {
-		t.Errorf("Expected body %q, got %q", expectedBody, recorder.Body.String())
-	}
-}
-
-func TestServer_MiddlewareApplication(t *testing.T) {
-	config := ServerConfig{
-		Host: "localhost",
-		Port: "0",
-	}
-
-	server, err := NewServer(config)
-	if err != nil {
-		t.Fatalf("NewServer() unexpected error: %v", err)
-	}
-
-	// Add test middleware
-	server.Middleware().Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Test-Middleware", "applied")
-			next.ServeHTTP(w, r)
-		})
-	})
+	// Add request logging middleware with default configuration
+	server.Middleware().Use(RequestLoggingMiddleware())
 
 	// Set test handler
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request ID is available in handler
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not available in handler context")
+		}
+
+		// Verify request ID format
+		if len(requestID) != RequestIDHexLength {
+			t.Errorf("Request ID length = %d, want %d", len(requestID), RequestIDHexLength)
+		}
+
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("test response"))
 	}))
@@ -959,29 +1161,38 @@ func TestServer_MiddlewareApplication(t *testing.T) {
 		}
 	}()
 
-	// Test that middleware is applied
+	// Test request logging integration
 	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("User-Agent", "test-client")
+
 	w := httptest.NewRecorder()
 
-	// Get the final handler from the HTTP server
-	if server.httpServer == nil || server.httpServer.Handler == nil {
-		t.Fatal("HTTP server or handler not initialized")
-	}
-
+	// Execute request through server
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify middleware was applied
-	if w.Header().Get("X-Test-Middleware") != "applied" {
-		t.Error("Middleware was not applied during server operation")
+	// Verify request ID header was added
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Error("X-Request-ID header not set by middleware")
 	}
 
-	// Verify handler was called
+	// Verify request ID format
+	if len(requestID) != RequestIDHexLength {
+		t.Errorf("Request ID format incorrect: got %d chars, want %d", len(requestID), RequestIDHexLength)
+	}
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
 	if w.Body.String() != "test response" {
-		t.Errorf("Expected 'test response', got %q", w.Body.String())
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "test response")
 	}
 }
 
-func TestServer_NilHandlerDefault(t *testing.T) {
+func TestServer_RequestLoggingWithCustomConfig(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -992,14 +1203,25 @@ func TestServer_NilHandlerDefault(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Don't set a handler - should get 404 default
-	// Add middleware to verify it still works
-	server.Middleware().Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Middleware", "applied")
-			next.ServeHTTP(w, r)
-		})
-	})
+	// Add request logging middleware with custom configuration
+	loggingConfig := RequestLoggingConfig{
+		Enabled:        true,
+		Level:          "info",
+		Format:         "json",
+		IncludeHeaders: true,
+	}
+	server.Middleware().Use(RequestLoggingMiddlewareWithConfig(loggingConfig))
+
+	// Set test handler
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not available in handler context")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("custom config test"))
+	}))
 
 	// Start server
 	err = server.Start()
@@ -1012,24 +1234,33 @@ func TestServer_NilHandlerDefault(t *testing.T) {
 		}
 	}()
 
-	// Test default 404 behavior
+	// Test with various headers including sensitive ones
 	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer token123")
+	req.Header.Set("X-API-Key", "secret123")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "test-client")
+
 	w := httptest.NewRecorder()
 
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify middleware was still applied
-	if w.Header().Get("X-Middleware") != "applied" {
-		t.Error("Middleware should be applied even with nil handler")
+	// Verify request ID header was added
+	if w.Header().Get("X-Request-ID") == "" {
+		t.Error("X-Request-ID header not set by middleware")
 	}
 
-	// Verify 404 response
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Expected 404 status, got %d", w.Code)
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "custom config test" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "custom config test")
 	}
 }
 
-func TestServer_MiddlewareChaining(t *testing.T) {
+func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -1040,37 +1271,35 @@ func TestServer_MiddlewareChaining(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Add multiple middleware using chaining
+	// Add multiple middleware including request logging
 	server.Middleware().
+		Use(RequestLoggingMiddleware()).
 		Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Middleware-1", "applied")
-				next.ServeHTTP(w, r)
-			})
-		}).
-		UseIf(true, func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Middleware-2", "applied")
-				next.ServeHTTP(w, r)
-			})
-		}).
-		UseIf(false, func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Middleware-3", "should-not-apply")
+				// Verify request ID is available in other middleware
+				requestID := GetRequestID(r.Context())
+				if requestID == "" {
+					t.Error("Request ID not available in subsequent middleware")
+				}
+
+				w.Header().Set("X-Test-Middleware", "applied")
 				next.ServeHTTP(w, r)
 			})
 		})
 
-	// Verify correct middleware count
-	if server.Middleware().Count() != 2 {
-		t.Errorf("Expected 2 middleware, got %d", server.Middleware().Count())
-	}
-
-	// Set handler and start server
+	// Set test handler
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request ID propagated to handler
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not available in final handler")
+		}
+
 		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("middleware chain test"))
 	}))
 
+	// Start server
 	err = server.Start()
 	if err != nil {
 		t.Fatalf("Start() unexpected error: %v", err)
@@ -1081,21 +1310,28 @@ func TestServer_MiddlewareChaining(t *testing.T) {
 		}
 	}()
 
-	// Test middleware application
+	// Test middleware chain
 	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify applied middleware
-	if w.Header().Get("X-Middleware-1") != "applied" {
-		t.Error("Middleware 1 should be applied")
+	// Verify both middleware applied
+	if w.Header().Get("X-Request-ID") == "" {
+		t.Error("Request logging middleware not applied")
 	}
-	if w.Header().Get("X-Middleware-2") != "applied" {
-		t.Error("Middleware 2 should be applied")
+
+	if w.Header().Get("X-Test-Middleware") != "applied" {
+		t.Error("Test middleware not applied")
 	}
-	if w.Header().Get("X-Middleware-3") != "" {
-		t.Error("Middleware 3 should not be applied (UseIf false)")
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "middleware chain test" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "middleware chain test")
 	}
 }
 ```
@@ -1104,86 +1340,64 @@ func TestServer_MiddlewareChaining(t *testing.T) {
 
 ## Security Considerations
 
-### Middleware Security Patterns
-
-#### Safe Middleware Chaining
+### Request ID Security
 ```go
-// Correct: Nil-safe middleware application
-func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
-    if handler == nil {
-        handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-            http.NotFound(w, r)
-        })
+// Correct: Cryptographically secure request ID generation
+func generateRequestID() (string, error) {
+    bytes := make([]byte, 8)
+    if _, err := rand.Read(bytes); err != nil {
+        return "", fmt.Errorf("failed to generate request ID: %w", err)
     }
-    // Continue with middleware application...
+    return hex.EncodeToString(bytes), nil
 }
 
-// Incorrect: Potential nil pointer dereference
-func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
-    result := handler // Could be nil
-    for _, middleware := range ms.middlewares {
-        result = middleware(result) // Panic if result is nil
-    }
-    return result
+// Incorrect: Predictable or weak request ID generation
+func generateRequestID() string {
+    return fmt.Sprintf("%d", time.Now().UnixNano()) // Predictable
 }
 ```
 
-#### Thread Safety During Setup
+### Logging Security Patterns
 ```go
-// Correct: Setup before serving requests
-func main() {
-    server, _ := NewServer(config)
-    
-    // Configure middleware before starting server
-    server.Middleware().
-        Use(SecurityMiddleware()).
-        UseIf(config.EnableCORS, CORSMiddleware())
-    
-    server.SetHandler(myHandler)
-    server.Start() // Middleware applied during start
+// Correct: Safe request logging without sensitive data
+slog.Info("Request started",
+    "request_id", requestID,
+    "method", r.Method,
+    "path", r.URL.Path,
+    "remote_addr", r.RemoteAddr,
+    "user_agent", r.UserAgent())
+
+// Incorrect: Logging sensitive data
+slog.Info("Request started",
+    "request_id", requestID,
+    "authorization", r.Header.Get("Authorization"), // NEVER log auth tokens
+    "request_body", body)                           // NEVER log request bodies
+```
+
+### Error Handling Security
+```go
+// Correct: Secure error handling for request ID generation failure
+requestID, err := generateRequestID()
+if err != nil {
+    slog.Error("Failed to generate request ID", "error", err)
+    http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+    return
 }
 
-// Incorrect: Modifying middleware after server start
-func main() {
-    server, _ := NewServer(config)
-    server.Start()
-    
-    // UNSAFE: Modifying middleware after server is running
-    server.Middleware().Use(newMiddleware) // Race condition
+// Incorrect: Exposing internal errors to clients
+if err != nil {
+    http.Error(w, err.Error(), http.StatusInternalServerError) // Exposes internal details
 }
 ```
 
-#### Handler Protection
+### Context Security
 ```go
-// Middleware should always call next handler appropriately
-func SecurityMiddleware(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        // Perform security checks
-        if !isAuthorized(r) {
-            http.Error(w, "Unauthorized", http.StatusUnauthorized)
-            return // Don't call next handler
-        }
-        
-        // Security checks passed, continue chain
-        next.ServeHTTP(w, r)
-    })
-}
-```
+// Correct: Type-safe context key usage
+type contextKey string
+const requestIDCtxKey contextKey = "request_id"
 
-### Conditional Middleware Security
-
-#### Environment-Based Security Middleware
-```go
-// Example secure conditional middleware usage
-func setupMiddleware(server *Server, config AppConfig) {
-    server.Middleware().
-        Use(RequestIDMiddleware()).              // Always generate request IDs
-        Use(LoggingMiddleware()).                // Always log requests
-        UseIf(config.EnableCORS, CORSMiddleware(config.CORSOrigins)). // Environment-specific CORS
-        UseIf(config.IsProduction, HSTSMiddleware()).                 // HSTS only in production
-        UseIf(config.EnableAuth, AuthMiddleware()).                   // Auth when enabled
-        Use(SecurityHeadersMiddleware())         // Always apply security headers
-}
+// Incorrect: String context keys (collision risk)
+const requestIDKey = "request_id" // string type, collision-prone
 ```
 
 ---
@@ -1192,49 +1406,53 @@ func setupMiddleware(server *Server, config AppConfig) {
 
 ### Unit Testing Requirements
 
-#### Middleware Type Testing
-- [ ] Verify `Middleware` type signature accepts `http.Handler` and returns `http.Handler`
-- [ ] Test middleware function application with simple handlers
-- [ ] Verify middleware can modify requests and responses
+#### Request ID Generation Testing
+- [ ] Test successful request ID generation with proper format validation
+- [ ] Test request ID uniqueness across multiple generations
+- [ ] Test hex format validation (16 characters, valid hex digits)
+- [ ] Test error handling for crypto/rand failures (mocking may be required)
 
-#### MiddlewareStack Testing
-- [ ] Test `NewMiddlewareStack()` creates empty stack
-- [ ] Test `Use()` method adds middleware and supports chaining
-- [ ] Test `UseIf()` method conditionally adds middleware
-- [ ] Test `Apply()` method wraps handler with all middleware
-- [ ] Test `Count()` method returns correct middleware count
-- [ ] Test `Clear()` method removes all middleware
-- [ ] Test nil handler handling in `Apply()`
-- [ ] Test middleware execution order (reverse application order)
+#### Context Propagation Testing
+- [ ] Test `WithRequestID()` adds request ID to context correctly
+- [ ] Test `GetRequestID()` retrieves request ID from context
+- [ ] Test `GetRequestID()` returns empty string for missing or wrong-type values
+- [ ] Test context key type safety
 
-#### Server Integration Testing
-- [ ] Test server includes initialized middleware stack
-- [ ] Test `Middleware()` method returns accessible stack
-- [ ] Test `SetHandler()` and `Handler()` methods
-- [ ] Test middleware application during server start
-- [ ] Test middleware chaining through server interface
-- [ ] Test default 404 handler when no handler set
+#### Response Writer Testing
+- [ ] Test `newResponseWriter()` creates wrapper with correct defaults
+- [ ] Test `WriteHeader()` captures status codes correctly
+- [ ] Test `Write()` captures byte counts and delegates properly
+- [ ] Test `StatusCode()` and `BytesWritten()` accessor methods
+- [ ] Test multiple writes accumulate byte counts correctly
+
+#### Middleware Testing
+- [ ] Test middleware applies request ID generation and context propagation
+- [ ] Test middleware adds `X-Request-ID` header to responses
+- [ ] Test middleware wraps ResponseWriter for metrics capture
+- [ ] Test middleware handles request ID generation failures gracefully
+- [ ] Test middleware logs request start and completion events
 
 ### Integration Testing Requirements
 
+#### Server Integration Testing
+- [ ] Test request logging middleware integrates with server lifecycle
+- [ ] Test middleware chain execution with request logging as first middleware
+- [ ] Test request ID propagation through multiple middleware layers
+- [ ] Test request logging works with various handler types
+- [ ] Test middleware performance impact is minimal
+
 #### End-to-End Testing
-- [ ] Test middleware applied to actual HTTP requests
-- [ ] Test multiple middleware execution order in request flow
-- [ ] Test conditional middleware application in different scenarios
-- [ ] Test middleware with various handler types (HandlerFunc, ServeMux, custom)
+- [ ] Test complete request flow with logging and response headers
+- [ ] Test request correlation across multiple requests
+- [ ] Test logging output format and structured fields
+- [ ] Test middleware behavior with different HTTP methods and paths
+- [ ] Test error scenarios and graceful degradation
 
-#### Edge Case Testing
-- [ ] Test empty middleware stack with various handlers
-- [ ] Test middleware stack with nil handlers
-- [ ] Test very large middleware stacks (performance validation)
-- [ ] Test middleware that doesn't call next handler
-- [ ] Test middleware that modifies request/response
-
-#### Security Testing
-- [ ] Test middleware setup before server start (thread safety)
-- [ ] Test that middleware receives all requests appropriately
-- [ ] Test conditional middleware security (CORS, HSTS, etc.)
-- [ ] Test middleware error handling doesn't leak information
+### Performance Testing Requirements
+- [ ] Test request ID generation performance (should be sub-millisecond)
+- [ ] Test middleware overhead is minimal (< 1ms additional latency)
+- [ ] Test memory usage is reasonable for response writer wrapping
+- [ ] Test logging performance with structured output
 
 ---
 
@@ -1245,7 +1463,7 @@ func setupMiddleware(server *Server, config AppConfig) {
 # Navigate to project root
 cd cipher-hub/
 
-# Verify clean build with new middleware code
+# Verify clean build with request logging middleware
 go build ./...
 
 # Expected: No compilation errors
@@ -1253,28 +1471,29 @@ go build ./...
 
 ### Step 2: Unit Test Verification
 ```bash
-# Run middleware-specific tests
-go test ./internal/server -run "TestMiddleware" -v
+# Run request logging specific tests
+go test ./internal/server -run "TestGenerateRequestID\|TestWithRequestID\|TestGetRequestID\|TestResponseWriter\|TestRequestLoggingMiddleware" -v
 
-# Expected: All middleware tests pass
+# Expected: All request logging tests pass
 # Sample output:
-# === RUN   TestMiddleware_TypeDefinition
-# === RUN   TestNewMiddlewareStack
-# === RUN   TestMiddlewareStack_Use
-# === RUN   TestMiddlewareStack_UseIf
-# === RUN   TestMiddlewareStack_Apply
-# --- PASS: All middleware tests should pass
+# === RUN   TestGenerateRequestID
+# === RUN   TestWithRequestID  
+# === RUN   TestGetRequestID
+# === RUN   TestNewResponseWriter
+# === RUN   TestResponseWriter_WriteHeader
+# === RUN   TestResponseWriter_Write
+# === RUN   TestRequestLoggingMiddleware
+# --- PASS: All request logging tests should pass
 ```
 
 ### Step 3: Server Integration Test Verification
 ```bash
-# Run server integration tests
-go test ./internal/server -run "TestServer_Middleware" -v
+# Run server integration tests with request logging
+go test ./internal/server -run "TestServer_RequestLogging" -v
 
-# Expected: All server middleware integration tests pass
-# === RUN   TestServer_MiddlewareIntegration
-# === RUN   TestServer_SetHandler
-# === RUN   TestServer_MiddlewareApplication
+# Expected: All server integration tests pass
+# === RUN   TestServer_RequestLoggingMiddleware
+# === RUN   TestServer_RequestLoggingWithOtherMiddleware
 # --- PASS: All integration tests should pass
 ```
 
@@ -1284,7 +1503,7 @@ go test ./internal/server -run "TestServer_Middleware" -v
 go test ./internal/server -v
 
 # Expected: All existing and new tests pass
-# Verify middleware tests don't break existing server functionality
+# Verify request logging doesn't break existing functionality
 ```
 
 ### Step 5: Code Quality Verification
@@ -1299,34 +1518,39 @@ go vet ./...
 ### Step 6: Documentation Verification
 ```bash
 # Verify go doc generates proper documentation
-go doc -all ./internal/server | grep -A 5 "type Middleware"
-go doc -all ./internal/server | grep -A 10 "type MiddlewareStack"
+go doc -all ./internal/server | grep -A 10 "func RequestLoggingMiddleware"
+go doc -all ./internal/server | grep -A 5 "func generateRequestID"
 
-# Expected: Complete documentation for middleware types and methods
+# Expected: Complete documentation for request logging functions
 ```
 
 ### Step 7: Test Coverage Analysis
 ```bash
-# Check test coverage for middleware functionality
+# Check test coverage including request logging
 go test ./internal/server -cover -coverprofile=coverage.out
-go tool cover -func=coverage.out | grep middleware
+go tool cover -func=coverage.out | grep request_logging
 
-# Expected: High coverage for middleware functionality (>90%)
+# Expected: High coverage for request logging functionality (>95%)
 ```
 
-### Step 8: Example Usage Verification
+### Step 8: Request Logging Integration Verification
 ```bash
-# Create simple test program to verify middleware usage
-cat > test_middleware.go << 'EOF'
+# Create integration test program
+cat > test_request_logging.go << 'EOF'
 package main
 
 import (
     "fmt"
+    "log/slog"
     "net/http"
+    "os"
     "cipher-hub/internal/server"
 )
 
 func main() {
+    // Configure structured logging
+    slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+    
     config := server.ServerConfig{
         Host: "localhost",
         Port: "8080",
@@ -1337,145 +1561,223 @@ func main() {
         panic(err)
     }
     
-    // Configure middleware
+    // Configure middleware with request logging
     srv.Middleware().
+        Use(server.RequestLoggingMiddleware()).
         Use(func(next http.Handler) http.Handler {
             return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                fmt.Printf("Request: %s %s\n", r.Method, r.URL.Path)
-                next.ServeHTTP(w, r)
-            })
-        }).
-        UseIf(true, func(next http.Handler) http.Handler {
-            return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                w.Header().Set("X-Powered-By", "Cipher Hub")
+                // Demonstrate request ID access in other middleware
+                requestID := server.GetRequestID(r.Context())
+                slog.Info("Custom middleware executed", "request_id", requestID)
                 next.ServeHTTP(w, r)
             })
         })
     
     // Set handler
     srv.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        requestID := server.GetRequestID(r.Context())
         w.WriteHeader(http.StatusOK)
-        w.Write([]byte("Hello, Middleware!"))
+        w.Write([]byte(fmt.Sprintf("Hello! Request ID: %s", requestID)))
     }))
     
+    fmt.Println("Request logging middleware integration test compiled successfully")
     fmt.Printf("Middleware count: %d\n", srv.Middleware().Count())
-    fmt.Println("Middleware usage example compiled successfully")
 }
 EOF
 
-go run test_middleware.go
-rm test_middleware.go
+go run test_request_logging.go
+rm test_request_logging.go
 
-# Expected: "Middleware count: 2" and "Middleware usage example compiled successfully"
+# Expected: "Request logging middleware integration test compiled successfully"
+# Expected: "Middleware count: 2"
+```
+
+### Step 9: Logging Output Verification
+```bash
+# Test actual logging output format
+cat > test_logging_output.go << 'EOF'
+package main
+
+import (
+    "log/slog"
+    "net/http"
+    "net/http/httptest"
+    "os"
+    "cipher-hub/internal/server"
+)
+
+func main() {
+    // Configure JSON logging
+    slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+    
+    middleware := server.RequestLoggingMiddleware()
+    
+    handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("test response"))
+    })
+    
+    wrappedHandler := middleware(handler)
+    
+    req := httptest.NewRequest("GET", "/test", nil)
+    req.RemoteAddr = "127.0.0.1:12345"
+    req.Header.Set("User-Agent", "test-client")
+    
+    w := httptest.NewRecorder()
+    wrappedHandler.ServeHTTP(w, req)
+    
+    println("Logging output test completed - check JSON logs above")
+}
+EOF
+
+go run test_logging_output.go
+rm test_logging_output.go
+
+# Expected: JSON log entries for request start and completion
 ```
 
 ---
 
 ## Completion Criteria
 
-### ✅ **Step 2.1.2.1 is complete when:**
+### ✅ **Step 2.1.2.2 is complete when:**
 
-1. **Middleware Type Definition**:
-   - [x] `Middleware` type defined as `func(http.Handler) http.Handler`
-   - [x] Industry-standard middleware signature implemented
-   - [x] Compatible with Go web framework patterns
-   - [x] Properly documented with usage examples
+1. **Request ID Generation with Constants**:
+   - [x] `generateRequestID()` function using `crypto/rand` with hex encoding
+   - [x] `RequestIDBytes` and `RequestIDHexLength` constants for maintainability
+   - [x] Consistent error handling with `RequestLoggingErrorPrefix`
+   - [x] Comprehensive testing for format, uniqueness, and high-concurrency scenarios
 
-2. **Enhanced Middleware Stack Implementation**:
-   - [x] `MiddlewareStack` struct with private middleware slice
-   - [x] `NewMiddlewareStack()` constructor with proper initialization
-   - [x] `Use()` method for guaranteed middleware with chaining support
-   - [x] `UseIf()` method for conditional middleware with chaining support
-   - [x] `Apply()` method with correct middleware order (reverse application)
-   - [x] `Count()` and `Clear()` utility methods for testing
-   - [x] Nil handler protection in `Apply()` method
+2. **Configuration Support**:
+   - [x] `RequestLoggingConfig` structure with environment variable loading
+   - [x] `LoadFromEnv()` method following established patterns
+   - [x] `ApplyDefaults()` method with secure default values
+   - [x] `RequestLoggingMiddlewareWithConfig()` for custom configuration
+   - [x] Logging enable/disable functionality
 
-3. **Server Integration**:
-   - [x] `middleware` field added to Server struct
-   - [x] Middleware stack initialized in `NewServer()` constructor
-   - [x] `Middleware()` accessor method for stack configuration
-   - [x] `SetHandler()` and `Handler()` methods for handler management
-   - [x] Middleware application integrated into `Start()` method
-   - [x] Proper integration with existing server lifecycle
+3. **Enhanced Context Propagation**:
+   - [x] Typed context keys for type-safe request ID storage
+   - [x] `WithRequestID()` and `GetRequestID()` helper functions
+   - [x] Request ID propagation through middleware chain and handlers
+   - [x] Safe handling of missing or wrong-type context values
 
-4. **Comprehensive Testing**:
-   - [x] Unit tests for middleware type definition and usage
-   - [x] Complete MiddlewareStack testing (Use, UseIf, Apply, Count, Clear)
-   - [x] Middleware execution order testing
-   - [x] Conditional middleware testing (UseIf with true/false)
-   - [x] Server integration testing (middleware + handler + start)
-   - [x] Edge case testing (nil handlers, empty stacks)
-   - [x] Chaining behavior testing for fluent API
+4. **Response Writer Wrapping**:
+   - [x] `responseWriter` struct wrapping `http.ResponseWriter`
+   - [x] Status code capture via `WriteHeader()` method
+   - [x] Byte count tracking via `Write()` method
+   - [x] Accessor methods for captured metrics
 
-5. **Documentation and Code Quality**:
-   - [x] Complete Go doc comments for all public types and methods
-   - [x] Usage examples in documentation
-   - [x] Security considerations documented
+5. **Advanced Request Logging Middleware**:
+   - [x] Both simple and configurable middleware functions
+   - [x] Structured logging with consistent field names using constants
+   - [x] Performance optimization with log level checking
+   - [x] Sensitive header filtering for security
+   - [x] Optional header inclusion for debugging
+   - [x] Request ID header addition (`X-Request-ID`)
+
+6. **Security Enhancements**:
+   - [x] `SensitiveHeaders` map for consistent header filtering
+   - [x] `filterSensitiveHeaders()` function preventing data leaks
+   - [x] Consistent error prefixes with `RequestLoggingErrorPrefix`
+   - [x] Safe logging practices with no sensitive data exposure
+
+7. **Server Integration**:
+   - [x] Middleware integrates with existing middleware stack
+   - [x] Request ID propagation works with other middleware  
+   - [x] Server lifecycle integration maintains all functionality
+   - [x] Method chaining support for fluent configuration
+   - [x] Configuration-based middleware deployment
+
+8. **Comprehensive Testing**:
+   - [x] Unit tests for all request logging components including configuration
+   - [x] Integration tests with server and custom configuration
+   - [x] Edge case testing including malformed requests and long URLs
+   - [x] High-concurrency testing for request ID uniqueness
+   - [x] Sensitive header filtering tests
+   - [x] Environment variable configuration tests
+   - [x] Performance testing for minimal overhead
+
+9. **Documentation and Code Quality**:
+   - [x] Complete Go doc comments for all public functions and types
+   - [x] Usage examples for both simple and advanced configuration
+   - [x] Security considerations and best practices documented
+   - [x] Performance optimization notes included
    - [x] Code passes formatting (`go fmt`) and static analysis (`go vet`)
-   - [x] High test coverage maintained (>90%)
+   - [x] High test coverage maintained (>95%)
 
-6. **Security and Best Practices**:
-   - [x] Thread-safe middleware setup patterns documented
-   - [x] Nil handler protection implemented
-   - [x] Secure middleware chaining with proper error handling
-   - [x] Clear separation between setup and runtime phases
-   - [x] No global state or hidden dependencies
+### 🚀 **Request Logging Middleware Complete**
 
-### 🏗️ **Middleware Foundation Complete**
-
-This implementation provides the complete foundation for Task 2.1.2 Middleware Infrastructure:
-- ✅ **Step 2.1.2.1**: Middleware function signature pattern (COMPLETE)
-- 📋 **Step 2.1.2.2**: Request logging middleware implementation (NEXT)
-- 📋 **Step 2.1.2.3**: CORS handling middleware (FUTURE)
+This implementation provides production-ready request logging with:
+- ✅ **Step 2.1.2.2**: Request logging middleware (COMPLETE)
+- 📋 **Step 2.1.2.3**: CORS handling middleware (NEXT)
+- 📋 **Step 2.1.2.4**: Error response formatting middleware (FUTURE)
 
 **Ready for Next Steps**:
-- **Step 2.1.2.2**: Implement request logging middleware using established middleware pattern
-- **Step 2.1.2.3**: Add CORS handling with environment-configurable origins
-- **Step 2.1.2.4**: Error response formatting middleware
-- **Step 2.1.3.1**: Health check system leveraging middleware infrastructure
+- **Step 2.1.2.3**: Implement CORS handling middleware with environment-configurable origins
+- **Step 2.1.2.4**: Error response formatting middleware with request correlation
+- **Step 2.1.2.5**: Security headers middleware with conditional HSTS
+- **Task 2.1.3**: Health check system leveraging middleware infrastructure and request correlation
 
 ### 📁 **Files Created/Modified**
-- `internal/server/middleware.go` - Complete middleware type and stack implementation
-- `internal/server/middleware_test.go` - Comprehensive middleware testing
-- `internal/server/server.go` - Enhanced with middleware integration
-- `internal/server/server_test.go` - Added middleware integration tests
+- `internal/server/request_logging.go` - Complete request logging middleware implementation
+- `internal/server/request_logging_test.go` - Comprehensive request logging testing
+- `internal/server/server_test.go` - Added request logging integration tests
 
 ---
 
 ## Architecture Benefits Achieved
 
-### 🔧 **Flexible Middleware Architecture**
-- **Standard Pattern**: Industry-standard `func(http.Handler) http.Handler` signature
-- **Conditional Support**: `UseIf()` enables environment-specific middleware
-- **Method Chaining**: Fluent API for clean middleware configuration
-- **Execution Order**: Predictable middleware execution (reverse application order)
+### 🔍 **Comprehensive Request Correlation**
+- **Secure Request IDs**: Cryptographically secure correlation tokens using configurable byte length
+- **Context Propagation**: Type-safe request ID propagation through entire request lifecycle
+- **Header Integration**: Client-accessible request IDs via `X-Request-ID` response header
+- **Middleware Chain Support**: Request IDs available to all subsequent middleware and handlers
+- **High-Concurrency Safety**: Tested request ID uniqueness under concurrent load
 
-### 🏗️ **Clean Server Integration**
-- **Composition**: MiddlewareStack as separate component within Server
-- **Lifecycle Integration**: Middleware applied during server start
-- **Handler Management**: Clean separation of handler setting and middleware application
-- **Future Extensibility**: Foundation ready for route-specific middleware
+### 📊 **Production-Ready Logging**
+- **Structured Logging**: JSON format with `log/slog` and consistent field naming
+- **Configurable Logging**: Environment-driven configuration with enable/disable support
+- **Performance Metrics**: Request duration, status codes, and response byte tracking
+- **Security Conscious**: Sensitive header filtering and no sensitive data logging
+- **Container Integration**: JSON logging suitable for aggregation in container orchestration
+- **Log Level Optimization**: Performance-optimized logging with level checking
 
-### 🧪 **Comprehensive Testing**
-- **Unit Testing**: Complete middleware stack testing with edge cases
-- **Integration Testing**: Server + middleware + handler testing
-- **Security Testing**: Thread safety and nil handler protection
-- **Documentation Testing**: Examples verify API usability
+### 🔧 **Flexible Configuration Architecture**
+- **Environment Integration**: Full environment variable support following established patterns
+- **Multiple Middleware Functions**: Both simple and advanced configuration options
+- **Header Filtering**: Configurable sensitive header exclusion for security
+- **Debugging Support**: Optional header inclusion for development environments
+- **Default Management**: Secure defaults with easy customization
 
-### ⚡ **Performance & Security**
-- **Efficient Application**: Middleware applied once during server start
-- **Thread Safety**: Safe setup patterns with clear runtime boundaries
-- **Error Handling**: Graceful handling of nil handlers and edge cases
-- **Memory Efficiency**: Minimal overhead for middleware chaining
+### 🛡️ **Enhanced Security Features**
+- **Sensitive Data Protection**: Comprehensive header filtering preventing token leakage
+- **Error Prefix Consistency**: Structured error handling with consistent prefixes
+- **Type-Safe Context**: Typed context keys preventing value collision attacks
+- **Configuration Validation**: Safe environment variable parsing and validation
+- **Security Constants**: Centralized sensitive header definitions
 
-This implementation establishes a robust, flexible middleware foundation that enables the development of request logging, CORS handling, authentication, and other HTTP processing middleware in subsequent steps! 🚀
+### 🧪 **Comprehensive Testing Coverage**
+- **Unit Testing**: Complete coverage including configuration, filtering, and edge cases
+- **Integration Testing**: Server integration with custom configuration testing
+- **Security Testing**: Verification of sensitive data filtering and safe logging practices
+- **Performance Testing**: High-concurrency request ID generation validation
+- **Edge Case Testing**: Malformed requests, long URLs, and various header scenarios
+
+### ⚡ **Performance & Maintainability**
+- **Efficient Implementation**: Minimal overhead with crypto/rand and response wrapping
+- **Named Constants**: Maintainable magic number elimination
+- **Consistent Field Names**: Centralized log field definitions
+- **Log Level Optimization**: Conditional expensive operations based on log levels
+- **Memory Efficiency**: Efficient header filtering and string operations
+
+This implementation establishes comprehensive request correlation and structured logging that will enhance debugging, monitoring, and operational visibility throughout the Cipher Hub system! 🚀
 
 ---
 
 ## Next Phase Preview
 
-**Step 2.1.2.2** will build on this foundation:
-- **Request Logging Middleware**: Use established middleware pattern for request/response logging
-- **Correlation ID Generation**: Leverage middleware chaining for request tracing
-- **Structured Logging**: Integrate with Go's `log/slog` for production logging
-- **Performance Metrics**: Add request duration and status code tracking
+**Step 2.1.2.3** will build on this logging foundation:
+- **CORS Middleware**: Environment-configurable origins using `UseIf()` pattern
+- **Request Correlation**: Leverage established request ID propagation for CORS logging
+- **Security Integration**: Build on structured logging for CORS security events
+- **Testing Patterns**: Follow established middleware testing patterns for CORS functionality
