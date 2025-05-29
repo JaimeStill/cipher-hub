@@ -2,210 +2,222 @@
 
 ## Current Development State
 
-**Active Step**: Step 2.1.2.1 Complete ✅ → Step 2.1.2.2 Next ⏳
+**Active Step**: Step 2.1.2.2 Request Logging Middleware → Nearly Complete ⏳ → Step 2.1.2.3 Next 📋
 
-### Step 2.1.2.1 Completion Status
-- **Middleware Function Signature Pattern**: ✅ **COMPLETED**
-  - Defined `Middleware` type as `func(http.Handler) http.Handler` following industry standards
-  - Created enhanced `MiddlewareStack` with conditional support (`Use()` and `UseIf()` methods)
-  - Implemented middleware application pattern with proper chaining and execution order
-  - Integrated middleware stack into Server struct with proper lifecycle management
-  - Added comprehensive method chaining support for fluent API design
-  - Implemented nil handler protection in `Apply()` method for robust error handling
+### Step 2.1.2.2 Implementation Status - Nearly Complete ⏳
 
-- **Server Integration Enhancement**: ✅ **COMPLETED**
-  - Added `middleware` field to Server struct initialized in `NewServer()` constructor
-  - Implemented `Middleware()` accessor method for external middleware configuration
-  - Enhanced `SetHandler()` and `Handler()` methods for clean handler management
-  - Modified `Start()` method to apply middleware during server initialization
-  - Integrated middleware application with existing HTTP server lifecycle
+**Request Logging Middleware Implementation**: ⏳ **IN PROGRESS - VERIFICATION PHASE**
+- **✅ Core Implementation**: Request logging middleware with cryptographically secure request ID generation
+- **✅ Structured Logging**: Integration with `log/slog` for production-ready JSON logging
+- **✅ Context Propagation**: Type-safe request ID propagation through middleware chain and handlers
+- **✅ Response Tracking**: Status code, response bytes, and request duration capture
+- **✅ Configuration Support**: Environment-driven configuration with `RequestLoggingConfig`
+- **✅ Security Features**: Sensitive header filtering and secure logging practices
+- **✅ Server Integration**: Seamless integration with existing middleware infrastructure
+- **⏳ Testing Verification**: Comprehensive testing including middleware execution order resolution
+- **⏳ Documentation Verification**: Public API documentation validation in progress
 
-- **Middleware Execution Order Resolution**: ✅ **COMPLETED**
-  - **Issue Resolved**: Fixed middleware execution order in `Apply()` method
-  - **Problem**: Initial implementation used reverse iteration causing incorrect execution order
-  - **Solution Applied**: Changed to forward iteration to make last registered middleware outermost
-  - **Pattern Clarification**: Ensured standard middleware composition (last registered wraps earlier middleware)
-  - **Validation**: All tests now pass with correct execution flow
+**Implementation Achievements**:
+- **Secure Request ID Generation**: 8-byte crypto/rand with hex encoding producing 16-character correlation IDs
+- **Enhanced Configuration Pattern**: Environment variable loading with centralized constants approach
+- **Response Writer Wrapping**: Comprehensive metrics capture including status codes and byte counts
+- **Middleware Execution Order Understanding**: Resolved middleware chaining issues with proper execution sequence
+- **Type-Safe Context Operations**: `WithRequestID()` and `GetRequestID()` helper functions with typed context keys
+- **Production Logging Features**: Structured JSON logging with consistent field names and performance optimization
 
-- **Comprehensive Testing Implementation**: ✅ **COMPLETED**
-  - **Unit Testing**: Complete middleware type definition and stack functionality testing
-  - **Integration Testing**: Server + middleware + handler coordination testing
-  - **Execution Order Testing**: Validated middleware chaining and proper execution sequence
-  - **Conditional Middleware Testing**: `UseIf()` functionality with true/false conditions
-  - **Edge Case Testing**: Nil handler protection, empty stacks, method chaining validation
-  - **Server Integration Testing**: Middleware application during server lifecycle
-  - **Test Coverage**: >95% coverage maintained with comprehensive scenario validation
+### Architecture Enhancements Completed ✅
 
-### Architecture Enhancements Achieved
-- **Complete Middleware Infrastructure**: Production-ready middleware system with conditional support
-- **Fluent API Design**: Method chaining enabling clean middleware configuration patterns
-- **Server Lifecycle Integration**: Seamless integration with existing HTTP server infrastructure
-- **Standard Compliance**: Industry-standard middleware signature following Go web framework patterns
-- **Thread Safety**: Safe middleware setup patterns with clear runtime boundaries
-- **Performance Optimization**: Middleware applied once during server start for optimal runtime performance
+**Configuration Architecture Decision**: **SIGNIFICANT IMPROVEMENT**
+- **Challenge**: Hard-coded environment variable strings scattered across codebase
+- **Solution Implemented**: Centralized environment variable constants in `internal/config` package
+- **Pattern Established**: `internal/config/env.go` with typed constants and helper functions
+- **Benefits Achieved**: IDE autocomplete, refactoring safety, centralized management, type-safe access
+- **Foundation Created**: Scalable configuration pattern for entire project
 
-### Current Implementation Status ✅
-- **Files Completed**:
-  - `internal/server/middleware.go` - Complete middleware type and stack implementation with execution order fix
-  - `internal/server/middleware_test.go` - Comprehensive middleware testing including execution order validation
-  - `internal/server/server.go` - Enhanced with middleware integration and handler management
-  - `internal/server/server_test.go` - Added middleware integration tests with server lifecycle validation
-- **Architecture Foundation**: Complete middleware infrastructure ready for request logging and CORS implementation
-- **Quality Status**: All tests passing, >95% coverage maintained, execution order correctly implemented
+**Server Package Scope Clarification**: **ARCHITECTURAL CLARITY**
+- **Scope Confirmed**: `internal/server` encompasses complete HTTP server capabilities
+- **Organization Strategy**: Middleware implementations directly in `internal/server` due to tight coupling
+- **Future Structure**: Middleware files co-located with server infrastructure for development efficiency
+- **Documentation Updated**: `internal/config/doc.go` created with comprehensive package documentation
+
+**Middleware Execution Order Resolution**: **DEBUGGING SUCCESS**
+- **Issue Identified**: Test failure due to middleware execution order misunderstanding
+- **Root Cause**: Test middleware registered after RequestLoggingMiddleware but expected to access request ID
+- **Solution Applied**: Corrected middleware registration order (last registered becomes outermost)
+- **Learning Achieved**: Deep understanding of middleware composition and execution flow
+- **Testing Enhanced**: Proper middleware chaining tests with execution order validation
+
+### Current Implementation Files Status
+- **✅ `internal/server/request_logging.go`**: Complete implementation with all security and performance features
+- **✅ `internal/server/request_logging_test.go`**: Comprehensive testing including edge cases and concurrency
+- **✅ `internal/server/server_test.go`**: Integration tests added for request logging middleware
+- **✅ `internal/config/env.go`**: Environment variable constants and helper functions
+- **✅ `internal/config/doc.go`**: Package documentation for configuration management
+- **⏳ Verification Phase**: Final documentation and test coverage validation in progress
 
 ## Architectural Decisions
 
-### Middleware Pattern Architecture Decision
-- **Context**: Need standardized middleware system for HTTP request processing
-- **Decision**: Implement `func(http.Handler) http.Handler` signature following Go web framework standards
+### Centralized Configuration Management Decision
+- **Context**: Environment variable strings hard-coded throughout codebase
+- **Decision**: Implement centralized environment variable constants in `internal/config` package
 - **Implementation**:
-  - Standard middleware signature compatible with existing Go frameworks (Gin, Echo, Chi)
-  - Enhanced `MiddlewareStack` with both guaranteed (`Use()`) and conditional (`UseIf()`) middleware
-  - Method chaining support for fluent API design and clean configuration
-- **Rationale**: Industry standard pattern ensures compatibility and developer familiarity
+  - Created `internal/config/env.go` with all environment variable name constants
+  - Implemented type-safe helper functions (`GetEnvString`, `GetEnvBool`, `GetEnvDuration`, etc.)
+  - Established naming convention: `CIPHER_HUB_<COMPONENT>_<SETTING>`
+  - Created comprehensive package documentation explaining patterns and usage
+- **Rationale**: Eliminates string duplication, provides IDE support, enables safe refactoring, centralizes configuration management
 
-### Middleware Execution Order Decision
-- **Context**: Need proper middleware execution order for standard composition patterns
-- **Decision**: Last registered middleware becomes outermost layer in execution chain
+### Server Package Organization Decision
+- **Context**: Question about scope and organization of `internal/server` package
+- **Decision**: `internal/server` encompasses complete HTTP server capabilities including middleware implementations
 - **Implementation**:
-  - Forward iteration in `Apply()` method to achieve correct wrapping order
-  - `stack.Use(A).Use(B).Use(C)` executes as `C → B → A → handler`
-  - Standard middleware composition where later middleware can control earlier middleware
-- **Issue Resolved**: Fixed initial reverse iteration bug that caused incorrect execution order
-- **Rationale**: Follows standard middleware patterns used across Go web frameworks
+  - Middleware implementations co-located with server infrastructure
+  - Tight coupling between middleware and server patterns justified direct inclusion
+  - Package documentation updated to reflect comprehensive server capability scope
+- **Rationale**: Middleware is tightly coupled to server infrastructure, easier testing and development, maintains clear architectural boundaries
 
-### Server Composition Decision
-- **Context**: Need clean integration of middleware with existing server infrastructure
-- **Decision**: Composition pattern with `MiddlewareStack` as separate component within Server
+### Request Logging Implementation Architecture
+- **Context**: Need production-ready request logging with correlation and performance metrics
+- **Decision**: Comprehensive request logging middleware with structured logging and security features
 - **Implementation**:
-  - `middleware` field in Server struct initialized in constructor
-  - `Middleware()` accessor method for external configuration
-  - Middleware application during `Start()` method execution
-  - Separation of handler setting (`SetHandler()`) from middleware application
-- **Rationale**: Clean separation of concerns enabling future extensibility and testing
+  - Cryptographically secure request ID generation using `crypto/rand`
+  - Structured JSON logging with `log/slog` and consistent field naming
+  - Response writer wrapping for comprehensive metrics capture
+  - Environment-driven configuration with secure defaults
+  - Sensitive header filtering for security compliance
+  - Type-safe context propagation with helper functions
+- **Rationale**: Production environments require correlation IDs, structured logging, security consciousness, and performance metrics
 
-### Conditional Middleware Architecture Decision
-- **Context**: Need environment-specific middleware deployment without code changes
-- **Decision**: Implement `UseIf()` method for condition-based middleware application
+### Middleware Execution Order Understanding
+- **Context**: Test failure revealed middleware execution order confusion
+- **Decision**: Clarify and document middleware composition patterns
 - **Implementation**:
-  - Boolean condition parameter determines middleware inclusion
-  - Method chaining compatibility maintained
-  - Zero-overhead when condition is false (middleware not added to stack)
-- **Rationale**: Enables environment-specific deployment (development debug, production security headers)
-
-### Error Handling Enhancement Decision
-- **Context**: Need robust middleware system that handles edge cases gracefully
-- **Decision**: Implement nil handler protection and comprehensive error handling
-- **Implementation**:
-  - `Apply()` method provides default 404 handler when input handler is nil
-  - Method chaining always returns stack instance for continued configuration
-  - Clear documentation of thread safety boundaries and setup requirements
-- **Rationale**: Production middleware system must handle all edge cases without failure
+  - Last registered middleware becomes outermost (executes first)
+  - Proper test design accounting for execution order
+  - Clear documentation of middleware chaining behavior
+  - Integration tests demonstrating correct middleware interaction
+- **Rationale**: Middleware composition must follow standard patterns for predictable behavior and proper functionality
 
 ## Unimplemented Ideas
 
-### Advanced Middleware Features (Future Enhancement)
-- **Route-Specific Middleware**: Middleware application based on URL patterns or HTTP methods
-  - Consider path-based middleware filtering for different endpoints
-  - Method-specific middleware (different processing for GET vs POST)
+### Advanced Request Logging Features (Future Enhancement)
+- **Request Body Logging**: Optional request body logging for debugging (with security safeguards)
+- **Response Body Logging**: Optional response body logging with size limits and content-type filtering
+- **Performance Profiling**: Detailed performance breakdown including middleware execution times
+- **Custom Log Formatters**: Pluggable log formatting for different deployment environments
+- **Log Correlation**: Integration with distributed tracing systems (OpenTelemetry)
+
+### Configuration Management Enhancements (Future)
+- **Configuration Validation**: Centralized validation with detailed error reporting
+- **Configuration Hot Reloading**: Runtime configuration updates without service restart
+- **Configuration Sources**: Support for configuration files, environment variables, and external sources
+- **Configuration Encryption**: Encrypted configuration values for sensitive settings
+
+### Enhanced Middleware Infrastructure (Step 2.1.2.3+ Preparation)
+- **Route-Specific Middleware**: Middleware application based on URL patterns
 - **Middleware Priorities**: Explicit ordering system beyond registration order
-- **Middleware Metadata**: Attach metadata to middleware for debugging and monitoring
+- **Middleware Metadata**: Debugging and monitoring information for middleware stack
+- **Middleware Performance Metrics**: Individual middleware execution time tracking
 
-### Performance Optimizations (Future)
-- **Middleware Caching**: Cache middleware chain results for identical configurations
-- **Selective Middleware**: Only apply middleware to specific request types
-- **Middleware Profiling**: Built-in timing and performance metrics for middleware execution
-
-### Enhanced Testing Patterns (Immediate Consideration)
-- **Benchmark Testing**: Performance testing for large middleware stacks
-- **Integration Load Testing**: Test middleware behavior under high concurrency
-- **Middleware Interaction Testing**: Test complex middleware interdependencies
-
-### Request Processing Enhancements (Step 2.1.2.2 Preparation)
-- **Request ID Generation**: Cryptographically secure request correlation IDs
-- **Structured Logging**: Integration with Go's `log/slog` for production logging
-- **Request Duration Tracking**: Performance metrics and response time monitoring
-- **Correlation Context**: Request-scoped context propagation through middleware chain
+### Testing Infrastructure Improvements (Quality Enhancement)
+- **Middleware Test Helpers**: Reusable test utilities for middleware validation
+- **Integration Test Framework**: Standardized patterns for server + middleware testing
+- **Performance Benchmarking**: Automated performance regression testing
+- **Security Test Suite**: Comprehensive security validation for all middleware
 
 ## Session Context
 
-### Key Collaborative Insights
-- **Middleware Execution Order Understanding**: Deep exploration of middleware composition patterns
-  - Understanding that forward iteration creates correct outermost-to-innermost wrapping
-  - Recognition that middleware execution order affects security and functionality
-  - Learning that "last registered becomes outermost" is standard Go middleware pattern
-- **Bug Resolution Methodology**: Systematic approach to fixing execution order issue
-  - Test-driven debugging using failing test to identify exact problem
-  - Analysis of expected vs actual execution flow
-  - Implementation of fix with clear understanding of iteration direction impact
+### Key Collaborative Learning Points
+- **Environment Variable Management**: Discovered need for centralized configuration constants and implemented solution
+- **Package Organization Strategy**: Clarified architectural scope of `internal/server` package
+- **Go Language Understanding**: Deep dive into type assertions vs generics, method vs function signatures
+- **Middleware Execution Flow**: Resolved middleware order confusion through systematic debugging
+- **Documentation Patterns**: Understanding of `go doc` behavior with public vs private functions
 
-### Problem-Solving Approach
-- **Test-Driven Implementation**: Used comprehensive test suite to validate middleware functionality
-- **Execution Order Resolution**: Identified and resolved middleware wrapping direction through systematic analysis
-- **Integration Testing**: Validated middleware system works seamlessly with existing server infrastructure
-- **Error Handling Enhancement**: Implemented robust edge case handling for production readiness
+### Problem-Solving Methodology
+- **Configuration Architecture**: Identified hard-coded strings problem and implemented systematic solution
+- **Middleware Debugging**: Used test failures to understand and correct middleware execution order
+- **Documentation Strategy**: Addressed documentation verification issues with corrected approach
+- **Type Safety Patterns**: Implemented type-safe context operations with proper error handling
 
-### Technical Learning Points
-- **Go Middleware Patterns**: Deep understanding of standard Go middleware composition
-- **Method Chaining Design**: Fluent API patterns for clean configuration interfaces
-- **Integration Architecture**: Proper composition patterns for complex system integration
-- **Test Strategy**: Comprehensive testing including unit, integration, and execution order validation
+### Technical Insights Gained
+- **Configuration Management**: Centralized constants provide significant maintainability benefits
+- **Middleware Composition**: Last registered middleware becomes outermost is critical for proper functionality
+- **Context Propagation**: Type-safe context operations prevent runtime errors and improve debugging
+- **Testing Strategy**: Middleware testing requires understanding of execution order and proper setup
+- **Go Documentation**: `go doc` focuses on public APIs, private function documentation verified through source
 
-### Step 2.1.2.2 Implementation Requirements (Immediate Next)
+### Step 2.1.2.2 Near-Completion Status
 
-**Target**: Implement request logging middleware using established middleware pattern
+**Implementation Quality**: ✅ **EXCEPTIONAL**
+- Complete request logging middleware with all specified features
+- Comprehensive testing including edge cases and high-concurrency scenarios
+- Security-conscious implementation with sensitive data protection
+- Performance-optimized with structured logging and efficient operations
+- Environment-driven configuration with centralized constants pattern
 
-**Specific Implementation Needs**:
-1. **Request ID Generation** - Create cryptographically secure correlation IDs using `crypto/rand`
-2. **Logging Middleware** - Implement structured logging with request/response details
-3. **Context Integration** - Add request ID to context for request lifecycle tracking
-4. **Structured Output** - Use Go's `log/slog` for production-ready structured logging
-5. **Performance Tracking** - Add request duration and status code metrics
+**Architectural Foundation Ready**: ✅ **SOLID**
+- Configuration management pattern established for entire project
+- Middleware integration demonstrates server infrastructure maturity
+- Type-safe context operations provide foundation for all request processing
+- Server package organization clarified for future middleware development
 
-**Foundation Ready**:
-- Complete middleware infrastructure with proper execution order
-- Server integration with middleware application during startup
-- Method chaining and conditional middleware support established
-- Comprehensive testing framework ready for request logging validation
+**Verification Phase Progress**: ⏳ **NEARLY COMPLETE**
+- Build verification: ✅ Code compiles successfully
+- Unit test verification: ✅ All request logging tests passing
+- Integration test verification: ⏳ Middleware execution order resolved, tests passing
+- Documentation verification: ⏳ Public API documentation validation in progress
 
-### Session Context
-- Development approach: Maintained 20-30 minute incremental steps with comprehensive validation
-- Quality standard: >95% test coverage with proper middleware execution order achieved
-- Architecture foundation: Complete middleware infrastructure with fluent API design
-- Bug resolution: Systematic approach to middleware execution order debugging and fixing
+## Next Implementation Steps
 
-### Next Steps After 2.1.2.2
-- **Step 2.1.2.3**: Add CORS handling middleware with environment-configurable origins
-- **Step 2.1.2.4**: Create error response formatting middleware with structured JSON output
-- **Step 2.1.2.5**: Implement security headers middleware with conditional HSTS
-- **Task 2.1.3**: Health check system implementation leveraging middleware infrastructure
-- Continue following `roadmap.md` progression through Phase 2.1
+### Step 2.1.2.3 Immediate Next (CORS Handling Middleware)
+- **Foundation Ready**: Complete middleware infrastructure with request logging operational
+- **Configuration Pattern**: Use established environment variable constants pattern
+- **Request Correlation**: Leverage request ID propagation for CORS logging
+- **Conditional Application**: Use `UseIf()` pattern for environment-specific CORS configuration
+- **Testing Approach**: Follow established middleware testing patterns with execution order awareness
+
+### Step 2.1.2.3 Implementation Requirements
+- **Environment-Configurable Origins**: Use `CIPHER_HUB_CORS_ORIGINS` environment variable
+- **Preflight Handling**: OPTIONS request processing with proper headers
+- **Security Logging**: CORS events with request correlation IDs
+- **Conditional Deployment**: Enable/disable based on environment configuration
+- **Integration Testing**: CORS + request logging middleware chain validation
+
+### Task 2.1.2 Completion Path
+- **Step 2.1.2.3**: CORS handling middleware (IMMEDIATE NEXT)
+- **Step 2.1.2.4**: Error response formatting middleware with request correlation
+- **Step 2.1.2.5**: Security headers middleware with conditional HSTS
+- **Step 2.1.2.6**: Comprehensive middleware tests and integration validation
+- **Task 2.1.3**: Health check system leveraging middleware infrastructure
 
 ## Implementation Context
 
-### Code Quality Status
-- **Middleware Implementation**: Production-ready middleware system with correct execution order
-- **Server Integration**: Clean composition pattern with proper lifecycle management
-- **Testing Standards**: Comprehensive test coverage including execution order validation
-- **Documentation**: Complete Go doc comments with usage examples and security considerations
-
 ### Session Progress Summary
-- **Complete Implementation**: Successfully implemented middleware function signature pattern with conditional support
-- **Architecture Enhancement**: Added fluent API design with method chaining for clean configuration
-- **Bug Resolution**: Fixed middleware execution order issue ensuring standard composition patterns
-- **Quality Achievement**: Resolved all testing issues with comprehensive middleware validation
-- **Foundation Completion**: Middleware infrastructure complete and ready for request logging development
+- **Near-Complete Implementation**: Successfully implemented request logging middleware with comprehensive features
+- **Architectural Improvements**: Established centralized configuration management pattern
+- **Technical Learning**: Resolved middleware execution order issues and Go language concepts
+- **Quality Achievement**: Comprehensive testing with security and performance focus
+- **Foundation Completion**: Middleware infrastructure ready for CORS and additional middleware
 
-### Middleware System Understanding Advancement
-- **Composition Patterns**: Deep understanding of middleware wrapping and execution order
-- **Integration Design**: Clean separation between middleware configuration and application
-- **Performance Considerations**: Middleware applied once during startup for optimal runtime performance
-- **Error Handling**: Robust edge case handling with nil handler protection and comprehensive validation
+### Development Quality Status
+- **Code Standards**: Following established Go best practices with security-first approach
+- **Testing Coverage**: Comprehensive unit and integration testing with edge case validation
+- **Documentation**: Public API documentation with security considerations and usage examples
+- **Configuration Management**: Centralized environment variable handling with type safety
+- **Security Implementation**: Sensitive data protection and secure request ID generation
+
+### Architecture Understanding Advancement
+- **Configuration Patterns**: Deep understanding of environment variable management strategies
+- **Middleware Composition**: Complete understanding of execution order and chaining behavior
+- **Package Organization**: Clear architectural boundaries and component responsibilities
+- **Context Operations**: Type-safe request correlation and data propagation patterns
+- **Testing Methodology**: Comprehensive approach to middleware and integration testing
 
 ---
 
-*Checkpoint Status: Step 2.1.2.1 Complete ✅ → Step 2.1.2.2 Ready*  
-*Next Focus: Implement request logging middleware with correlation IDs and structured logging*  
-*Architecture Status: Complete middleware infrastructure with proper execution order and server integration*  
-*Development Quality: All tests passing, comprehensive coverage, execution order correctly implemented*  
-*Learning Achievement: Advanced middleware composition understanding with practical bug resolution experience*
+*Checkpoint Status: Step 2.1.2.2 Nearly Complete ⏳ → Step 2.1.2.3 Ready*  
+*Next Focus: CORS handling middleware with environment-configurable origins*  
+*Architecture Status: Complete middleware infrastructure with request logging and configuration management*  
+*Development Quality: Comprehensive testing, security focus, centralized configuration patterns*  
+*Learning Achievement: Advanced middleware composition understanding with practical implementation experience*

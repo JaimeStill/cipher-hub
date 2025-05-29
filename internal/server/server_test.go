@@ -1342,3 +1342,219 @@ func TestIsValidHostname(t *testing.T) {
 		})
 	}
 }
+
+func TestServer_RequestLoggingMiddleware(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add request logging middleware with default configuration
+	server.Middleware().Use(RequestLoggingMiddleware())
+
+	// Set test handler
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request ID is available in handler
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not available in handler context")
+		}
+
+		// Verify request ID format
+		if len(requestID) != RequestIDHexLength {
+			t.Errorf("Request ID length = %d, want %d", len(requestID), RequestIDHexLength)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test request logging integration
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("User-Agent", "test-client")
+
+	w := httptest.NewRecorder()
+
+	// Execute request through server
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify request ID header was added
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Error("X-Request-ID header not set by middleware")
+	}
+
+	// Verify request ID format
+	if len(requestID) != RequestIDHexLength {
+		t.Errorf("Request ID format incorrect: got %d chars, want %d", len(requestID), RequestIDHexLength)
+	}
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "test response" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "test response")
+	}
+}
+
+func TestServer_RequestLoggingWithCustomConfig(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add request logging middleware with custom configuration
+	loggingConfig := RequestLoggingConfig{
+		Enabled:        true,
+		Level:          "info",
+		Format:         "json",
+		IncludeHeaders: true,
+	}
+	server.Middleware().Use(RequestLoggingMiddlewareWithConfig(loggingConfig))
+
+	// Set test handler
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not available in handler context")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("custom config test"))
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test with various headers including sensitive ones
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer token123")
+	req.Header.Set("X-API-Key", "secret123")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "test-client")
+
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify request ID header was added
+	if w.Header().Get("X-Request-ID") == "" {
+		t.Error("X-Request-ID header not set by middleware")
+	}
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "custom config test" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "custom config test")
+	}
+}
+
+func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add multiple middleware including request logging
+	server.Middleware().
+		Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Verify request ID is available in other middleware
+				requestID := GetRequestID(r.Context())
+				if requestID == "" {
+					t.Error("Request ID not available in subsequent middleware")
+				}
+
+				w.Header().Set("X-Test-Middleware", "applied")
+				next.ServeHTTP(w, r)
+			})
+		}).
+		Use(RequestLoggingMiddleware())
+
+	// Set test handler
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request ID propagated to handler
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not available in final handler")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("middleware chain test"))
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test middleware chain
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify both middleware applied
+	if w.Header().Get("X-Request-ID") == "" {
+		t.Error("Request logging middleware not applied")
+	}
+
+	if w.Header().Get("X-Test-Middleware") != "applied" {
+		t.Error("Test middleware not applied")
+	}
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "middleware chain test" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "middleware chain test")
+	}
+}
