@@ -2,10 +2,10 @@
 
 **Cipher Hub** is a comprehensive, containerized key management service built in Go that serves as a centralized security layer for cryptographic operations across distributed systems. Designed as a sidecar component, it handles the complete lifecycle of encryption keys while providing standardized REST APIs for key operations, abstracting away cryptographic complexity from application services.
 
-## Project Status: Task 2.1.2 Middleware Infrastructure → Step 2.1.2.1 Complete ✅
+## Project Status: Task 2.1.2 Middleware Infrastructure → Step 2.1.2.2 Complete ✅
 
-**Current Development**: Task 2.1.2 → Step 2.1.2.1 Complete ✅ → Step 2.1.2.2 Next ⏳  
-**Architecture Foundation**: Production-ready HTTP server with complete middleware infrastructure and graceful shutdown  
+**Current Development**: Task 2.1.2 → Step 2.1.2.2 Complete ✅ → Step 2.1.2.3 Next ⏳  
+**Architecture Foundation**: Production-ready HTTP server with complete middleware infrastructure, graceful shutdown, and structured request logging  
 **Go Version**: 1.24+ with enhanced routing patterns and standard library focus
 
 ### Development Progress Highlights
@@ -19,7 +19,8 @@
       - **✅ Step 2.1.1.3**: Graceful shutdown mechanism with signal handling (COMPLETE ✅)
     - **⏳ Task 2.1.2**: Middleware Infrastructure (IN PROGRESS ⏳)
       - **✅ Step 2.1.2.1**: Middleware function signature pattern (COMPLETE ✅)
-      - **⏳ Step 2.1.2.2**: Request logging middleware (IMMEDIATE NEXT ⏳)
+      - **✅ Step 2.1.2.2**: Request logging middleware (COMPLETE ✅)
+      - **⏳ Step 2.1.2.3**: CORS handling middleware (IMMEDIATE NEXT ⏳)
     - **📋 Task 2.1.3**: Health Check System
     - **📋 Task 2.1.4**: Handler Framework
   - **📋 Target 2.2**: API foundation with service registration and participant endpoints
@@ -46,7 +47,7 @@ cd cipher-hub
 go mod tidy
 go test ./...
 
-# Run the service (complete HTTP server with middleware and graceful shutdown)
+# Run the service (complete HTTP server with middleware, logging, and graceful shutdown)
 go run cmd/cipher-hub/main.go
 
 # Test graceful shutdown
@@ -69,11 +70,12 @@ go mod tidy
 ```
 
 #### Current Development Focus
-**Phase 2 → Target 2.1 → Task 2.1.2 → Step 2.1.2.2**: Implementing request logging middleware
+**Phase 2 → Target 2.1 → Task 2.1.2 → Step 2.1.2.3**: Implementing CORS handling middleware
 - Use established middleware pattern with conditional support
-- Generate cryptographically secure request IDs for correlation
-- Implement structured logging with `log/slog` for production readiness
-- Leverage complete HTTP server lifecycle and middleware infrastructure
+- Environment-configurable CORS origins using centralized config constants
+- Handle preflight OPTIONS requests with proper headers
+- Leverage request correlation for CORS event logging
+- Build on complete request logging infrastructure with structured JSON output
 
 ## Core Documents
 
@@ -97,6 +99,9 @@ cipher-hub/
 │   ├── main.go              # Main application with graceful shutdown
 │   └── doc.go               # Package documentation
 ├── internal/
+│   ├── config/              # Centralized configuration management (Phase 2.1.2 ✅)
+│   │   ├── env.go           # Environment variable constants and helpers
+│   │   └── docs.go          # Package documentation
 │   ├── models/              # Core data models (Phase 1 ✅)
 │   │   ├── common.go        # Shared utilities and ID generation
 │   │   ├── common_test.go   # Common utilities testing
@@ -116,7 +121,10 @@ cipher-hub/
 │       ├── server.go        # Complete HTTP server with graceful shutdown (✅)
 │       ├── server_test.go   # Comprehensive security and lifecycle testing (✅)
 │       ├── middleware.go    # Complete middleware infrastructure (✅)
-│       └── middleware_test.go # Comprehensive middleware testing (✅)
+│       ├── middleware_test.go # Comprehensive middleware testing (✅)
+│       ├── request_logging.go # Production-ready request logging middleware (✅)
+│       ├── request_logging_test.go # Comprehensive request logging testing (✅)
+│       └── doc.go           # Package documentation
 ├── checkpoint.md           # Development progress and next steps
 ├── go.mod                  # Go module definition
 ├── readme.md               # Project homepage and documentation
@@ -152,6 +160,24 @@ cipher-hub/
 - **✅ Thread Safety**: Safe middleware setup with clear runtime boundaries
 - **✅ Performance Optimization**: Middleware applied once during server start
 
+### 📊 Request Logging Infrastructure (Phase 2 → Target 2.1 → Task 2.1.2 → Step 2.1.2.2 Complete ✅)
+- **✅ Production-Ready Structured Logging**: JSON format with `log/slog` for container environments
+- **✅ Secure Request ID Generation**: 8-byte crypto/rand with hex encoding (16-character correlation tokens)
+- **✅ Configuration Support**: Environment variable loading with centralized constants pattern
+- **✅ Response Writer Wrapping**: Comprehensive metrics capture (status codes, byte counts, duration)
+- **✅ Context Propagation**: Type-safe request ID propagation through middleware chain and handlers
+- **✅ Security Features**: Sensitive header filtering preventing credential/token leakage in logs
+- **✅ Performance Optimization**: Log level checking and efficient request/response tracking
+- **✅ Container Integration**: JSON logging suitable for aggregation in container orchestration
+- **✅ Comprehensive Testing**: Unit, integration, security, performance, and edge case validation
+
+### 🔧 Centralized Configuration Management (Phase 2 → Target 2.1 → Task 2.1.2 Complete ✅)
+- **✅ Environment Variable Constants**: Centralized constants in `internal/config/env.go`
+- **✅ Naming Convention**: Consistent `CIPHER_HUB_<COMPONENT>_<SETTING>` pattern
+- **✅ Type-Safe Helpers**: Helper functions for common configuration types
+- **✅ Comprehensive Documentation**: Package documentation explaining patterns and usage
+- **✅ Scalable Foundation**: Ready for application-wide configuration management
+
 ### 🗄️ Core Data Models (Phase 1 - Complete)
 - **Service Registration**: Logical containers for related participants with metadata extensibility
 - **Participant Management**: Flexible participant types using metadata-driven classification
@@ -170,7 +196,7 @@ cipher-hub/
 - **Graceful Termination**: In-flight request completion within configured timeout
 - **Resource Cleanup**: Proper cleanup of listeners, connections, and server instances
 - **Health Check Ready**: Foundation prepared for container health monitoring
-- **Environment Configuration**: Ready for environment variable configuration loading
+- **Environment Configuration**: Centralized environment variable configuration management
 
 ## Planned Features
 
@@ -241,6 +267,9 @@ go build -o cipher-hub cmd/cipher-hub/main.go
 CIPHER_HUB_HOST=0.0.0.0 \
 CIPHER_HUB_PORT=8080 \
 CIPHER_HUB_SHUTDOWN_TIMEOUT=30s \
+CIPHER_HUB_LOGGING_ENABLED=true \
+CIPHER_HUB_LOG_LEVEL=info \
+CIPHER_HUB_LOG_FORMAT=json \
 ./cipher-hub
 ```
 
@@ -250,13 +279,22 @@ The service properly handles container orchestration signals:
 - **SIGTERM**: Container orchestration graceful shutdown signal
 - **Graceful Termination**: In-flight requests complete before shutdown
 
+### Request Logging Configuration
+Production-ready structured logging with comprehensive configuration:
+```bash
+# Environment variables for request logging
+CIPHER_HUB_LOGGING_ENABLED=true           # Enable/disable request logging
+CIPHER_HUB_LOG_LEVEL=info                 # Logging level (debug, info, warn, error)
+CIPHER_HUB_LOG_FORMAT=json                # Logging format (json, text)
+CIPHER_HUB_LOG_INCLUDE_HEADERS=false      # Include non-sensitive headers in logs
+```
+
 ### Middleware Configuration
 Production-ready middleware setup with environment-based configuration:
 ```go
 // Example middleware configuration
 server.Middleware().
-    Use(RequestIDMiddleware()).              // Always generate request IDs
-    Use(RequestLoggingMiddleware()).         // Always log requests
+    Use(RequestLoggingMiddleware()).         // Always generate request IDs and log requests
     UseIf(config.EnableCORS, CORSMiddleware(config.CORSOrigins)). // Environment-specific CORS
     UseIf(config.IsProduction, HSTSMiddleware()).                 // HSTS only in production
     Use(SecurityHeadersMiddleware())         // Always apply security headers
@@ -269,4 +307,4 @@ server.Middleware().
 ---
 
 **Built with ❤️ using Go standard library and security-first principles**  
-*Current Focus: Step 2.1.2.2 Request Logging Middleware building on completed Step 2.1.2.1 Middleware Function Signature Pattern*
+*Current Focus: Step 2.1.2.3 CORS Handling Middleware building on completed Step 2.1.2.2 Request Logging Middleware with correlation IDs and performance metrics*
