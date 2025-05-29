@@ -1,32 +1,32 @@
-# Step 2.1.2.2: Implement Request Logging Middleware
+# Step 2.1.2.3: Implement CORS Handling Middleware
 
 ## Overview
 
-**Step**: 2.1.2.2  
+**Step**: 2.1.2.3  
 **Task**: 2.1.2 (Middleware Infrastructure)  
 **Target**: 2.1 (Basic Server Setup)  
 **Phase**: 2 (HTTP Server Infrastructure)  
 
 **Time Estimate**: 20-25 minutes  
-**Scope**: Implement structured request logging middleware with correlation IDs and performance metrics
+**Scope**: Implement environment-configurable CORS handling middleware with preflight support
 
 ## Step Objectives
 
 ### Primary Deliverables
-- [ ] **Request Logging Middleware**: Implement structured logging using established middleware pattern
-- [ ] **Secure Request ID Generation**: Generate cryptographically secure correlation IDs
-- [ ] **Structured Logging Integration**: Use `log/slog` for production-ready JSON logging
-- [ ] **Response Tracking**: Capture status codes, response bytes, and request duration
-- [ ] **Context Propagation**: Add request IDs to context for request lifecycle tracking
+- [ ] **CORS Configuration Structure**: Environment-driven CORS configuration with secure defaults
+- [ ] **CORS Middleware Implementation**: Handle CORS headers and preflight OPTIONS requests
+- [ ] **Environment Integration**: Add CORS variables to centralized configuration management
+- [ ] **Request Correlation**: Integrate CORS events with existing request logging and correlation IDs
+- [ ] **Server Integration**: Use conditional middleware application with `UseIf()` pattern
 - [ ] **Comprehensive Testing**: Unit and integration tests following established patterns
 
 ### Implementation Requirements
-- **Files Created**: `internal/server/request_logging.go`, tests for request logging middleware
-- **Files Modified**: `internal/server/server_test.go` (add integration tests)
-- **Architecture Focus**: Structured logging with correlation IDs and performance metrics
-- **Security Focus**: No sensitive data in logs, secure request ID generation
-- **Go Best Practices**: Use `log/slog`, context propagation, and middleware composition
-- **Foundation Usage**: Leverage complete middleware infrastructure from Step 2.1.2.1
+- **Files Created**: CORS configuration in `internal/config/env.go`, CORS middleware implementation
+- **Files Modified**: `internal/server/server.go` (add CORS integration example), tests for CORS middleware
+- **Architecture Focus**: Environment-configurable CORS with secure defaults and preflight handling
+- **Security Focus**: Restrictive CORS policy by default, explicit origin configuration required
+- **Go Best Practices**: Follow established middleware patterns and configuration loading
+- **Foundation Usage**: Leverage request logging correlation IDs and middleware infrastructure
 
 ---
 
@@ -34,760 +34,341 @@
 
 ### Technical Specifications
 
-#### Request Logging Middleware Requirements
-- **Standard Middleware Pattern**: Use `func(http.Handler) http.Handler` signature
-- **Structured Logging**: JSON format with `log/slog` for container environments
-- **Request Correlation**: Cryptographically secure request IDs for tracing
-- **Performance Metrics**: Request duration, status codes, and response size tracking
-- **Context Integration**: Propagate request IDs through request context
+#### CORS Configuration Requirements
+- **Environment Variables**: Use centralized configuration with `CIPHER_HUB_CORS_*` pattern
+- **Secure Defaults**: Empty origins list means no CORS headers (secure by default)
+- **Conditional Application**: Use `UseIf()` pattern to apply CORS only when origins are configured
+- **Request Correlation**: Log CORS events with existing request ID correlation system
 
-#### Request ID Generation Requirements
-- **Security**: Use `crypto/rand` for cryptographically secure random generation
-- **Format**: 8-byte random values hex-encoded to 16-character strings
-- **Collision Resistance**: Sufficient entropy for high-throughput scenarios
-- **Error Handling**: Graceful handling of ID generation failures
+#### CORS Headers Requirements
+- **Basic CORS Headers**: `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`
+- **Preflight Support**: Handle OPTIONS requests with appropriate response headers
+- **Configurable Origins**: Support comma-separated list of allowed origins from environment
+- **Standard Methods**: Support `GET, POST, PUT, DELETE, OPTIONS` by default
 
 #### Logging Requirements
-- **No Sensitive Data**: Never log authentication tokens, key material, or user data
-- **Structured Format**: JSON logging with consistent field names
-- **Performance Tracking**: Request start/end with duration calculations
-- **Error Handling**: Proper error responses when logging setup fails
+- **Request Correlation**: Use existing `GetRequestID(r.Context())` for CORS event correlation
+- **Structured Logging**: Use `slog.Info()` with consistent field naming patterns
+- **CORS Events**: Log preflight requests and origin validation with security context
 
 ---
 
 ## Implementation
 
-### Step 1: Create Request ID Generation and Constants
+### Step 1: Add CORS Environment Variables to Configuration
 
-**File**: `internal/server/request_logging.go`
+**File**: `internal/config/env.go` (modify existing file)
+
+Add CORS environment variables to the existing constants in the security configuration section:
+
+```go
+// Update the existing security configuration section
+const (
+    // ... existing server and logging constants ...
+
+    // Security configuration (existing section - add new CORS variables here)
+    EnvCORSEnabled = "CIPHER_HUB_CORS_ENABLED"    // Add this line
+    EnvCORSOrigins = "CIPHER_HUB_CORS_ORIGINS"    // Already exists - don't duplicate
+    EnvCORSMethods = "CIPHER_HUB_CORS_METHODS"    // Add this line
+    EnvCORSHeaders = "CIPHER_HUB_CORS_HEADERS"    // Add this line  
+    EnvCORSMaxAge  = "CIPHER_HUB_CORS_MAX_AGE"    // Add this line
+    EnvTLSCertFile = "CIPHER_HUB_TLS_CERT_FILE"   // Existing
+    EnvTLSKeyFile  = "CIPHER_HUB_TLS_KEY_FILE"    // Existing
+
+    // ... rest of existing constants ...
+)
+```
+
+### Step 2: Create CORS Configuration Structure
+
+**File**: `internal/server/cors.go` (new file)
 
 ```go
 package server
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
+	"net/url"
 	"strings"
-	"time"
+
+	"cipher-hub/internal/config"
 )
 
-// Request logging constants
+// CORS configuration constants
 const (
-	// Request ID generation
-	RequestIDBytes    = 8                    // 8 bytes for crypto/rand generation
-	RequestIDHexLength = RequestIDBytes * 2  // 16 characters hex-encoded
+	// CORS error handling
+	CORSErrorPrefix = "CORS"
 
-	// Error handling
-	RequestLoggingErrorPrefix = "RequestLogging"
+	// CORS log field names for consistency
+	LogFieldCORSOrigin     = "cors_origin"
+	LogFieldCORSMethod     = "cors_method"
+	LogFieldCORSPreflight  = "cors_preflight"
+	LogFieldCORSAllowed    = "cors_allowed"
 
-	// Log field names for consistency
-	LogFieldRequestID    = "request_id"
-	LogFieldMethod       = "method"
-	LogFieldPath         = "path"
-	LogFieldStatusCode   = "status_code"
-	LogFieldDurationMS   = "duration_ms"
-	LogFieldBytesWritten = "bytes_written"
-	LogFieldRemoteAddr   = "remote_addr"
-	LogFieldUserAgent    = "user_agent"
-	LogFieldContentLength = "content_length"
+	// Default CORS configuration
+	DefaultCORSMethods = "GET, POST, PUT, DELETE, OPTIONS"
+	DefaultCORSHeaders = "Content-Type, Authorization, X-Request-ID"
+	DefaultCORSMaxAge  = "86400" // 24 hours
 )
 
-// Sensitive headers that should never be logged
-var SensitiveHeaders = map[string]bool{
-	"authorization": true,
-	"cookie":        true,
-	"x-api-key":     true,
-	"x-auth-token":  true,
-	"proxy-authorization": true,
-}
-
-// contextKey type for type-safe context values
-type contextKey string
-
-const (
-	requestIDCtxKey contextKey = "request_id"
-)
-
-// RequestLoggingConfig holds configuration for request logging middleware
-type RequestLoggingConfig struct {
+// CORSConfig holds configuration for CORS middleware
+type CORSConfig struct {
 	Enabled     bool     `json:"enabled"`
-	Level       string   `json:"level"`        // "debug", "info", "warn", "error"
-	Format      string   `json:"format"`       // "json" or "text"
-	IncludeHeaders bool  `json:"include_headers"` // Include non-sensitive headers
+	Origins     []string `json:"origins"`
+	Methods     string   `json:"methods"`
+	Headers     string   `json:"headers"`
+	MaxAge      string   `json:"max_age"`
+	Credentials bool     `json:"credentials"`
 }
 
-// LoadFromEnv populates logging configuration from environment variables
-func (c *RequestLoggingConfig) LoadFromEnv() {
-	if enabled := os.Getenv("CIPHER_HUB_LOGGING_ENABLED"); enabled != "" {
-		c.Enabled = strings.ToLower(enabled) == "true"
-	}
-	if level := os.Getenv("CIPHER_HUB_LOG_LEVEL"); level != "" {
-		c.Level = strings.ToLower(level)
-	}
-	if format := os.Getenv("CIPHER_HUB_LOG_FORMAT"); format != "" {
-		c.Format = strings.ToLower(format)
-	}
-	if headers := os.Getenv("CIPHER_HUB_LOG_INCLUDE_HEADERS"); headers != "" {
-		c.IncludeHeaders = strings.ToLower(headers) == "true"
-	}
+// LoadFromEnv populates CORS configuration from environment variables using established helper functions
+func (c *CORSConfig) LoadFromEnv() {
+	// Use established configuration helpers
+	c.Enabled = config.GetEnvBool(config.EnvCORSEnabled, c.Enabled)
+	c.Origins = config.GetEnvStringSlice(config.EnvCORSOrigins, ",", c.Origins)
+	c.Methods = config.GetEnvString(config.EnvCORSMethods, c.Methods)
+	c.Headers = config.GetEnvString(config.EnvCORSHeaders, c.Headers)
+	c.MaxAge = config.GetEnvString(config.EnvCORSMaxAge, c.MaxAge)
 }
 
-// ApplyDefaults sets secure default values for logging configuration
-func (c *RequestLoggingConfig) ApplyDefaults() {
-	if c.Level == "" {
-		c.Level = "info"
+// ApplyDefaults sets secure default values for CORS configuration
+func (c *CORSConfig) ApplyDefaults() {
+	// Secure default: disabled unless explicitly configured
+	if !c.Enabled && len(c.Origins) == 0 {
+		c.Enabled = false
 	}
-	if c.Format == "" {
-		c.Format = "json"
-	}
-	// Enabled defaults to true, IncludeHeaders defaults to false
-	if !c.Enabled {
+
+	// Enable CORS if origins are configured
+	if len(c.Origins) > 0 {
 		c.Enabled = true
 	}
-}
 
-// generateRequestID creates a cryptographically secure request ID for correlation tracking.
-// Uses crypto/rand to generate random bytes, then hex-encodes to a string.
-//
-// Returns:
-//   - string: Hex-encoded request ID of RequestIDHexLength characters
-//   - error: Generation error if crypto/rand fails
-//
-// Security: Uses cryptographically secure random generation for correlation safety.
-// The request ID is not used for authentication and provides sufficient entropy for
-// request correlation in high-throughput scenarios.
-func generateRequestID() (string, error) {
-	bytes := make([]byte, RequestIDBytes)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("%s: failed to generate request ID: %w", 
-			RequestLoggingErrorPrefix, err)
+	// Set default methods, headers, and max age
+	if c.Methods == "" {
+		c.Methods = DefaultCORSMethods
 	}
-	return hex.EncodeToString(bytes), nil
-}
-
-// WithRequestID adds a request ID to the context using a typed context key.
-// This enables safe request ID propagation throughout the request lifecycle.
-//
-// Parameters:
-//   - ctx: Parent context
-//   - requestID: Request correlation ID
-//
-// Returns:
-//   - context.Context: Context with embedded request ID
-func WithRequestID(ctx context.Context, requestID string) context.Context {
-	return context.WithValue(ctx, requestIDCtxKey, requestID)
-}
-
-// GetRequestID retrieves the request ID from context with type safety.
-// Returns empty string if no request ID is found, allowing graceful handling.
-//
-// Parameters:
-//   - ctx: Context containing request ID
-//
-// Returns:
-//   - string: Request ID if present, empty string otherwise
-func GetRequestID(ctx context.Context) string {
-	if requestID, ok := ctx.Value(requestIDCtxKey).(string); ok {
-		return requestID
+	if c.Headers == "" {
+		c.Headers = DefaultCORSHeaders
 	}
-	return ""
+	if c.MaxAge == "" {
+		c.MaxAge = DefaultCORSMaxAge
+	}
+}
+
+// Validate performs comprehensive validation of CORS configuration
+func (c *CORSConfig) Validate() error {
+	for _, origin := range c.Origins {
+		if origin == "*" {
+			// Allow wildcard but warn about security implications
+			slog.Warn("CORS wildcard origin configured - major security risk in production",
+				"origin", "*",
+				"recommendation", "use specific origins in production")
+			continue
+		}
+		
+		// Validate origin URL format
+		if _, err := url.Parse(origin); err != nil {
+			return fmt.Errorf("%s: invalid origin URL %q: %w", 
+				CORSErrorPrefix, origin, err)
+		}
+	}
+	return nil
+}
+
+// normalizeOrigin converts origin to lowercase scheme and host (RFC compliant)
+func normalizeOrigin(origin string) string {
+	if u, err := url.Parse(origin); err == nil {
+		u.Scheme = strings.ToLower(u.Scheme)
+		u.Host = strings.ToLower(u.Host)
+		return u.String()
+	}
+	// Fallback for malformed URLs
+	return strings.ToLower(origin)
+}
+
+// IsOriginAllowed checks if the given origin is in the allowed origins list.
+// Performs case-insensitive matching for URL schemes and hostnames following RFC standards.
+//
+// Security Warning: Using "*" as an origin allows ALL origins and is a major security risk.
+// Only use "*" in development environments, never in production.
+func (c *CORSConfig) IsOriginAllowed(origin string) bool {
+	if len(c.Origins) == 0 {
+		return false // No origins configured = no CORS
+	}
+
+	normalizedOrigin := normalizeOrigin(origin)
+
+	for _, allowedOrigin := range c.Origins {
+		if allowedOrigin == "*" {
+			// Log security warning for wildcard usage
+			slog.Warn("CORS wildcard origin matched - security risk in production",
+				"wildcard_origin", "*",
+				"actual_origin", origin,
+				"recommendation", "use specific origins in production")
+			return true
+		}
+		
+		if normalizeOrigin(allowedOrigin) == normalizedOrigin {
+			return true
+		}
+	}
+	return false
 }
 ```
 
-### Step 2: Implement Response Writer Wrapper
+### Step 3: Implement CORS Middleware
 
-**Continue in**: `internal/server/request_logging.go`
-
-```go
-// responseWriter wraps http.ResponseWriter to capture status codes and response metrics.
-// This enables comprehensive request logging including response status and byte counts.
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode   int
-	bytesWritten int64
-}
-
-// newResponseWriter creates a wrapped ResponseWriter with default status code.
-// Default status is 200 OK, which matches http.ResponseWriter behavior when
-// WriteHeader is not explicitly called.
-//
-// Parameters:
-//   - w: Original http.ResponseWriter to wrap
-//
-// Returns:
-//   - *responseWriter: Wrapped writer with status and byte tracking
-func newResponseWriter(w http.ResponseWriter) *responseWriter {
-	return &responseWriter{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK, // Default status code
-		bytesWritten:   0,
-	}
-}
-
-// WriteHeader captures the status code before delegating to the wrapped writer.
-// This method is called automatically by the HTTP server or can be called explicitly.
-//
-// Parameters:
-//   - code: HTTP status code to set
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
-}
-
-// Write captures the number of bytes written while delegating to the wrapped writer.
-// This enables tracking of response size for performance monitoring.
-//
-// Parameters:
-//   - b: Bytes to write to response
-//
-// Returns:
-//   - int: Number of bytes written
-//   - error: Write error if any
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	n, err := rw.ResponseWriter.Write(b)
-	rw.bytesWritten += int64(n)
-	return n, err
-}
-
-// StatusCode returns the captured HTTP status code.
-// Returns the status code set by WriteHeader or 200 OK by default.
-//
-// Returns:
-//   - int: HTTP status code
-func (rw *responseWriter) StatusCode() int {
-	return rw.statusCode
-}
-
-// BytesWritten returns the total number of bytes written to the response.
-// This provides response size metrics for performance monitoring.
-//
-// Returns:
-//   - int64: Total bytes written
-func (rw *responseWriter) BytesWritten() int64 {
-	return rw.bytesWritten
-}
-```
-
-### Step 3: Implement Request Logging Middleware
-
-**Continue in**: `internal/server/request_logging.go`
+**Continue in**: `internal/server/cors.go`
 
 ```go
-// RequestLoggingMiddleware creates middleware that logs all HTTP requests with structured logging.
-// Uses default configuration with info-level JSON logging enabled.
+// CORSMiddleware creates middleware that handles CORS (Cross-Origin Resource Sharing) requests.
+// Uses default configuration with environment variable loading.
 //
 // Returns:
-//   - Middleware: Configured request logging middleware function
-func RequestLoggingMiddleware() Middleware {
-	config := RequestLoggingConfig{}
+//   - Middleware: Configured CORS middleware function
+func CORSMiddleware() Middleware {
+	config := CORSConfig{}
 	config.ApplyDefaults()
 	config.LoadFromEnv()
-	return RequestLoggingMiddlewareWithConfig(config)
+	
+	// Validate configuration and log any issues
+	if err := config.Validate(); err != nil {
+		slog.Error("CORS configuration validation failed", "error", err)
+		// Return pass-through middleware on validation failure
+		return func(next http.Handler) http.Handler { return next }
+	}
+	
+	return CORSMiddlewareWithConfig(config)
 }
 
-// RequestLoggingMiddlewareWithConfig creates middleware with custom logging configuration.
-// Generates secure request IDs for correlation, tracks request duration and response metrics,
-// and uses structured JSON logging for production environments.
+// CORSMiddlewareWithConfig creates middleware with custom CORS configuration.
+// Handles CORS headers for cross-origin requests and processes preflight OPTIONS requests.
 //
 // Features:
-//   - Cryptographically secure request ID generation for correlation tracking
-//   - Structured logging with log/slog using JSON format
-//   - Request duration timing for performance monitoring
-//   - Status code and response size tracking
-//   - Request ID propagation through context
-//   - Security-conscious logging (no sensitive data)
-//   - Configurable logging levels and format
+//   - Environment-configurable allowed origins with secure defaults
+//   - Case-insensitive origin matching following RFC standards
+//   - Preflight OPTIONS request handling with proper response headers
+//   - Request correlation logging for CORS events and security monitoring
+//   - Conditional CORS header application based on origin validation
+//   - Support for configurable HTTP methods, headers, and max-age
+//   - Comprehensive security warnings for wildcard origins
 //
-// The middleware logs two events per request:
-//   1. Request start: Method, path, remote address, user agent, request ID
-//   2. Request completion: Duration, status code, bytes written, request ID
+// Security: Uses restrictive defaults (no CORS headers unless origins configured).
+// Empty origins list results in no CORS headers being applied, following secure-by-default principle.
+// Wildcard "*" origins trigger security warnings and should only be used in development.
 //
 // Parameters:
-//   - config: RequestLoggingConfig with logging behavior settings
+//   - config: CORSConfig with CORS behavior settings
 //
 // Returns:
-//   - Middleware: Configured request logging middleware function
-//
-// Security: Never logs sensitive data such as authentication tokens, request bodies,
-// or any user-provided data that could contain secrets. Request IDs are correlation
-// tokens only and are safe for logging.
-//
-// Performance: Minimal overhead with efficient request ID generation and structured
-// logging. Response writer wrapping has negligible performance impact.
+//   - Middleware: Configured CORS middleware function
 //
 // Example usage:
 //
-//	config := RequestLoggingConfig{
+//	config := CORSConfig{
 //		Enabled: true,
-//		Level:   "info",
-//		Format:  "json",
+//		Origins: []string{"https://app.example.com", "https://admin.example.com"},
+//		Methods: "GET, POST, PUT, DELETE, OPTIONS",
+//		Headers: "Content-Type, Authorization, X-Request-ID",
 //	}
-//	server.Middleware().Use(RequestLoggingMiddlewareWithConfig(config))
-func RequestLoggingMiddlewareWithConfig(config RequestLoggingConfig) Middleware {
+//	server.Middleware().UseIf(len(config.Origins) > 0, CORSMiddlewareWithConfig(config))
+func CORSMiddlewareWithConfig(config CORSConfig) Middleware {
 	return func(next http.Handler) http.Handler {
-		// Skip logging entirely if disabled
-		if !config.Enabled {
+		// Skip CORS entirely if disabled or no origins configured
+		if !config.Enabled || len(config.Origins) == 0 {
 			return next
 		}
 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
+			origin := r.Header.Get("Origin")
+			requestID := GetRequestID(r.Context())
 
-			// Generate secure request ID
-			requestID, err := generateRequestID()
-			if err != nil {
-				slog.Error("Failed to generate request ID", "error", err)
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			// Check if origin is allowed (includes case-insensitive matching)
+			originAllowed := config.IsOriginAllowed(origin)
+
+			// Log CORS request for monitoring and security analysis
+			if origin != "" {
+				slog.Info("CORS request received",
+					LogFieldRequestID, requestID,
+					LogFieldCORSOrigin, origin,
+					LogFieldCORSMethod, r.Method,
+					LogFieldCORSAllowed, originAllowed)
+			}
+
+			// Set CORS headers if origin is allowed
+			if originAllowed {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", config.Methods)
+				w.Header().Set("Access-Control-Allow-Headers", config.Headers)
+				w.Header().Set("Access-Control-Max-Age", config.MaxAge)
+				
+				// Set credentials header if configured
+				if config.Credentials {
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+			}
+
+			// Handle preflight OPTIONS requests
+			if r.Method == "OPTIONS" {
+				// Log preflight request with security context
+				slog.Info("CORS preflight request",
+					LogFieldRequestID, requestID,
+					LogFieldCORSOrigin, origin,
+					LogFieldCORSPreflight, true,
+					LogFieldCORSAllowed, originAllowed)
+
+				if originAllowed {
+					w.WriteHeader(http.StatusOK)
+				} else {
+					// Log security event for disallowed preflight
+					slog.Warn("CORS preflight request rejected",
+						LogFieldRequestID, requestID,
+						LogFieldCORSOrigin, origin,
+						"reason", "origin not allowed")
+					w.WriteHeader(http.StatusForbidden)
+				}
 				return
 			}
 
-			// Add request ID to context for propagation
-			ctx := WithRequestID(r.Context(), requestID)
-			r = r.WithContext(ctx)
-
-			// Add request ID to response headers for client correlation
-			w.Header().Set("X-Request-ID", requestID)
-
-			// Check log level before expensive operations
-			if slog.Default().Enabled(context.Background(), slog.LevelInfo) {
-				// Build log fields using consistent field names
-				logFields := []any{
-					LogFieldRequestID, requestID,
-					LogFieldMethod, r.Method,
-					LogFieldPath, r.URL.Path,
-					LogFieldRemoteAddr, r.RemoteAddr,
-					LogFieldUserAgent, r.UserAgent(),
-					LogFieldContentLength, r.ContentLength,
-				}
-
-				// Optionally include non-sensitive headers
-				if config.IncludeHeaders {
-					headers := filterSensitiveHeaders(r.Header)
-					if len(headers) > 0 {
-						logFields = append(logFields, "headers", headers)
-					}
-				}
-
-				// Log request start with structured data
-				slog.Info("Request started", logFields...)
-			}
-
-			// Wrap ResponseWriter to capture metrics
-			wrapped := newResponseWriter(w)
-
-			// Call next handler in middleware chain
-			next.ServeHTTP(wrapped, r)
-
-			// Calculate request duration
-			duration := time.Since(start)
-
-			// Check log level before completion logging
-			if slog.Default().Enabled(context.Background(), slog.LevelInfo) {
-				// Log request completion with performance metrics
-				slog.Info("Request completed",
-					LogFieldRequestID, requestID,
-					LogFieldMethod, r.Method,
-					LogFieldPath, r.URL.Path,
-					LogFieldStatusCode, wrapped.StatusCode(),
-					LogFieldDurationMS, duration.Milliseconds(),
-					LogFieldBytesWritten, wrapped.BytesWritten(),
-					LogFieldRemoteAddr, r.RemoteAddr)
-			}
+			// Continue to next handler for non-preflight requests
+			next.ServeHTTP(w, r)
 		})
 	}
 }
-
-// filterSensitiveHeaders removes sensitive headers from logging
-func filterSensitiveHeaders(headers http.Header) map[string]string {
-	filtered := make(map[string]string)
-	for key, values := range headers {
-		lowerKey := strings.ToLower(key)
-		if !SensitiveHeaders[lowerKey] {
-			filtered[key] = strings.Join(values, ", ")
-		}
-	}
-	return filtered
-}
 ```
 
-### Step 4: Create Comprehensive Tests
+### Step 4: Create Comprehensive CORS Tests
 
-**File**: `internal/server/request_logging_test.go`
+**File**: `internal/server/cors_test.go` (new file)
 
 ```go
 package server
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 )
 
-func TestGenerateRequestID(t *testing.T) {
-	tests := []struct {
-		name string
-		runs int
-	}{
-		{
-			name: "single generation",
-			runs: 1,
-		},
-		{
-			name: "multiple generations for uniqueness",
-			runs: 100,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ids := make(map[string]bool)
-
-			for i := 0; i < tt.runs; i++ {
-				id, err := generateRequestID()
-				if err != nil {
-					t.Fatalf("generateRequestID() error = %v", err)
-				}
-
-				// Verify ID format (16 character hex string)
-				if len(id) != 16 {
-					t.Errorf("generateRequestID() ID length = %d, want 16", len(id))
-				}
-
-				// Verify hex format
-				for _, char := range id {
-					if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
-						t.Errorf("generateRequestID() invalid hex character: %c", char)
-					}
-				}
-
-				// Check for duplicates in multiple runs
-				if tt.runs > 1 {
-					if ids[id] {
-						t.Errorf("generateRequestID() duplicate ID generated: %s", id)
-					}
-					ids[id] = true
-				}
-			}
-		})
-	}
-}
-
-func TestWithRequestID(t *testing.T) {
-	ctx := context.Background()
-	requestID := "test-request-id"
-
-	// Add request ID to context
-	newCtx := WithRequestID(ctx, requestID)
-
-	// Verify request ID was added
-	retrievedID := GetRequestID(newCtx)
-	if retrievedID != requestID {
-		t.Errorf("GetRequestID() = %v, want %v", retrievedID, requestID)
-	}
-}
-
-func TestGetRequestID(t *testing.T) {
-	tests := []struct {
-		name    string
-		ctx     context.Context
-		want    string
-	}{
-		{
-			name: "context with request ID",
-			ctx:  WithRequestID(context.Background(), "test-id"),
-			want: "test-id",
-		},
-		{
-			name: "context without request ID",
-			ctx:  context.Background(),
-			want: "",
-		},
-		{
-			name: "context with wrong type value",
-			ctx:  context.WithValue(context.Background(), requestIDCtxKey, 123),
-			want: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := GetRequestID(tt.ctx)
-			if got != tt.want {
-				t.Errorf("GetRequestID() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestNewResponseWriter(t *testing.T) {
-	w := httptest.NewRecorder()
-	wrapped := newResponseWriter(w)
-
-	// Test default values
-	if wrapped.StatusCode() != http.StatusOK {
-		t.Errorf("newResponseWriter() default status = %d, want %d", 
-			wrapped.StatusCode(), http.StatusOK)
-	}
-
-	if wrapped.BytesWritten() != 0 {
-		t.Errorf("newResponseWriter() default bytes = %d, want 0", wrapped.BytesWritten())
-	}
-}
-
-func TestResponseWriter_WriteHeader(t *testing.T) {
-	w := httptest.NewRecorder()
-	wrapped := newResponseWriter(w)
-
-	// Test status code capture
-	wrapped.WriteHeader(http.StatusNotFound)
-
-	if wrapped.StatusCode() != http.StatusNotFound {
-		t.Errorf("WriteHeader() status = %d, want %d", 
-			wrapped.StatusCode(), http.StatusNotFound)
-	}
-
-	// Verify underlying writer received the status
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Underlying writer status = %d, want %d", w.Code, http.StatusNotFound)
-	}
-}
-
-func TestResponseWriter_Write(t *testing.T) {
-	w := httptest.NewRecorder()
-	wrapped := newResponseWriter(w)
-
-	testData := []byte("test response data")
-	n, err := wrapped.Write(testData)
-
-	if err != nil {
-		t.Errorf("Write() error = %v", err)
-	}
-
-	if n != len(testData) {
-		t.Errorf("Write() bytes written = %d, want %d", n, len(testData))
-	}
-
-	if wrapped.BytesWritten() != int64(len(testData)) {
-		t.Errorf("BytesWritten() = %d, want %d", wrapped.BytesWritten(), len(testData))
-	}
-
-	// Verify underlying writer received the data
-	if w.Body.String() != string(testData) {
-		t.Errorf("Underlying writer body = %q, want %q", w.Body.String(), string(testData))
-	}
-}
-
-func TestRequestLoggingMiddleware(t *testing.T) {
-	middleware := RequestLoggingMiddleware()
-
-	// Create test handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request ID is available in context
-		requestID := GetRequestID(r.Context())
-		if requestID == "" {
-			t.Error("Request ID not found in context")
-		}
-
-		// Write test response
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
-	})
-
-	// Apply middleware
-	wrappedHandler := middleware(handler)
-
-	// Create test request
-	req := httptest.NewRequest("GET", "/test", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("User-Agent", "test-agent")
-
-	w := httptest.NewRecorder()
-
-	// Execute request
-	wrappedHandler.ServeHTTP(w, req)
-
-	// Verify response has request ID header
-	requestID := w.Header().Get("X-Request-ID")
-	if requestID == "" {
-		t.Error("X-Request-ID header not set")
-	}
-
-	// Verify request ID format
-	if len(requestID) != 16 {
-		t.Errorf("Request ID length = %d, want 16", len(requestID))
-	}
-
-	// Verify response
-	if w.Code != http.StatusOK {
-		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	if w.Body.String() != "test response" {
-		t.Errorf("Response body = %q, want %q", w.Body.String(), "test response")
-	}
-}
-
-func TestRequestLoggingMiddleware_GenerationFailure(t *testing.T) {
-	// This test would require mocking crypto/rand failure
-	// For now, we test the middleware with successful generation
-	// In production, request ID generation failure is extremely rare
-	
-	middleware := RequestLoggingMiddleware()
-	
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	
-	wrappedHandler := middleware(handler)
-	
-	req := httptest.NewRequest("GET", "/test", nil)
-	w := httptest.NewRecorder()
-	
-	// Should not panic even with potential generation issues
-	wrappedHandler.ServeHTTP(w, req)
-	
-	// Verify some response was generated
-	if w.Code == 0 {
-		t.Error("No response status code set")
-	}
-}
-
-func TestRequestLoggingMiddleware_StatusCodeCapture(t *testing.T) {
-	tests := []struct {
-		name           string
-		statusCode     int
-		responseBody   string
-	}{
-		{
-			name:         "200 OK",
-			statusCode:   http.StatusOK,
-			responseBody: "success",
-		},
-		{
-			name:         "404 Not Found",
-			statusCode:   http.StatusNotFound,
-			responseBody: "not found",
-		},
-		{
-			name:         "500 Internal Server Error",
-			statusCode:   http.StatusInternalServerError,
-			responseBody: "server error",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			middleware := RequestLoggingMiddleware()
-
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tt.statusCode)
-				w.Write([]byte(tt.responseBody))
-			})
-
-			wrappedHandler := middleware(handler)
-
-			req := httptest.NewRequest("GET", "/test", nil)
-			w := httptest.NewRecorder()
-
-			wrappedHandler.ServeHTTP(w, req)
-
-			if w.Code != tt.statusCode {
-				t.Errorf("Status code = %d, want %d", w.Code, tt.statusCode)
-			}
-
-			if w.Body.String() != tt.responseBody {
-				t.Errorf("Response body = %q, want %q", w.Body.String(), tt.responseBody)
-			}
-
-			// Verify request ID header is present
-			if w.Header().Get("X-Request-ID") == "" {
-				t.Error("X-Request-ID header not set")
-			}
-		})
-	}
-}
-
-func TestRequestLoggingMiddleware_MethodAndPathCapture(t *testing.T) {
-	tests := []struct {
-		name   string
-		method string
-		path   string
-	}{
-		{
-			name:   "GET request",
-			method: "GET",
-			path:   "/api/health",
-		},
-		{
-			name:   "POST request",
-			method: "POST",
-			path:   "/api/services",
-		},
-		{
-			name:   "PUT request",
-			method: "PUT",
-			path:   "/api/services/123",
-		},
-		{
-			name:   "DELETE request",
-			method: "DELETE",
-			path:   "/api/services/456",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			middleware := RequestLoggingMiddleware()
-
-			var capturedMethod, capturedPath string
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				capturedMethod = r.Method
-				capturedPath = r.URL.Path
-				w.WriteHeader(http.StatusOK)
-			})
-
-			wrappedHandler := middleware(handler)
-
-			req := httptest.NewRequest(tt.method, tt.path, nil)
-			w := httptest.NewRecorder()
-
-			wrappedHandler.ServeHTTP(w, req)
-
-			if capturedMethod != tt.method {
-				t.Errorf("Captured method = %q, want %q", capturedMethod, tt.method)
-			}
-
-			if capturedPath != tt.path {
-				t.Errorf("Captured path = %q, want %q", capturedPath, tt.path)
-			}
-		})
-	}
-}
-
-func TestRequestLoggingConfig_LoadFromEnv(t *testing.T) {
+func TestCORSConfig_LoadFromEnv(t *testing.T) {
 	// Save original environment
 	originalEnv := make(map[string]string)
 	envVars := []string{
-		"CIPHER_HUB_LOGGING_ENABLED",
-		"CIPHER_HUB_LOG_LEVEL", 
-		"CIPHER_HUB_LOG_FORMAT",
-		"CIPHER_HUB_LOG_INCLUDE_HEADERS",
+		"CIPHER_HUB_CORS_ENABLED",
+		"CIPHER_HUB_CORS_ORIGINS",
+		"CIPHER_HUB_CORS_METHODS",
+		"CIPHER_HUB_CORS_HEADERS",
+		"CIPHER_HUB_CORS_MAX_AGE",
 	}
-	
+
 	for _, key := range envVars {
 		originalEnv[key] = os.Getenv(key)
 	}
-	
+
 	// Clean up environment after test
 	defer func() {
 		for _, key := range envVars {
@@ -802,31 +383,61 @@ func TestRequestLoggingConfig_LoadFromEnv(t *testing.T) {
 	tests := []struct {
 		name     string
 		envVars  map[string]string
-		expected RequestLoggingConfig
+		expected CORSConfig
 	}{
 		{
-			name: "default values",
+			name:    "default values",
 			envVars: map[string]string{},
-			expected: RequestLoggingConfig{
-				Enabled: true,
-				Level:   "info",
-				Format:  "json",
-				IncludeHeaders: false,
+			expected: CORSConfig{
+				Enabled: false,
+				Origins: nil,
+				Methods: DefaultCORSMethods,
+				Headers: DefaultCORSHeaders,
+				MaxAge:  DefaultCORSMaxAge,
 			},
 		},
 		{
-			name: "custom configuration",
+			name: "enabled with origins and custom config",
 			envVars: map[string]string{
-				"CIPHER_HUB_LOGGING_ENABLED": "false",
-				"CIPHER_HUB_LOG_LEVEL": "debug",
-				"CIPHER_HUB_LOG_FORMAT": "text",
-				"CIPHER_HUB_LOG_INCLUDE_HEADERS": "true",
+				"CIPHER_HUB_CORS_ENABLED": "true",
+				"CIPHER_HUB_CORS_ORIGINS": "https://app.example.com,https://admin.example.com",
+				"CIPHER_HUB_CORS_METHODS": "GET, POST, PUT",
+				"CIPHER_HUB_CORS_HEADERS": "Content-Type, Authorization",
+				"CIPHER_HUB_CORS_MAX_AGE": "3600",
 			},
-			expected: RequestLoggingConfig{
-				Enabled: false,
-				Level:   "debug",
-				Format:  "text",
-				IncludeHeaders: true,
+			expected: CORSConfig{
+				Enabled: true,
+				Origins: []string{"https://app.example.com", "https://admin.example.com"},
+				Methods: "GET, POST, PUT",
+				Headers: "Content-Type, Authorization",
+				MaxAge:  "3600",
+			},
+		},
+		{
+			name: "origins without explicit enabled",
+			envVars: map[string]string{
+				"CIPHER_HUB_CORS_ORIGINS": "https://app.example.com",
+			},
+			expected: CORSConfig{
+				Enabled: true, // Should be enabled automatically when origins are set
+				Origins: []string{"https://app.example.com"},
+				Methods: DefaultCORSMethods,
+				Headers: DefaultCORSHeaders,
+				MaxAge:  DefaultCORSMaxAge,
+			},
+		},
+		{
+			name: "disabled explicitly with origins",
+			envVars: map[string]string{
+				"CIPHER_HUB_CORS_ENABLED": "false",
+				"CIPHER_HUB_CORS_ORIGINS": "https://app.example.com",
+			},
+			expected: CORSConfig{
+				Enabled: true, // Origins override disabled flag
+				Origins: []string{"https://app.example.com"},
+				Methods: DefaultCORSMethods,
+				Headers: DefaultCORSHeaders,
+				MaxAge:  DefaultCORSMaxAge,
 			},
 		},
 	}
@@ -838,183 +449,491 @@ func TestRequestLoggingConfig_LoadFromEnv(t *testing.T) {
 				os.Setenv(key, value)
 			}
 
-			config := RequestLoggingConfig{}
+			config := CORSConfig{}
 			config.ApplyDefaults()
 			config.LoadFromEnv()
 
 			if config.Enabled != tt.expected.Enabled {
 				t.Errorf("Enabled = %v, want %v", config.Enabled, tt.expected.Enabled)
 			}
-			if config.Level != tt.expected.Level {
-				t.Errorf("Level = %v, want %v", config.Level, tt.expected.Level)
+
+			if len(config.Origins) != len(tt.expected.Origins) {
+				t.Errorf("Origins length = %v, want %v", len(config.Origins), len(tt.expected.Origins))
+			} else {
+				for i, origin := range config.Origins {
+					if origin != tt.expected.Origins[i] {
+						t.Errorf("Origins[%d] = %v, want %v", i, origin, tt.expected.Origins[i])
+					}
+				}
 			}
-			if config.Format != tt.expected.Format {
-				t.Errorf("Format = %v, want %v", config.Format, tt.expected.Format)
+
+			if config.Methods != tt.expected.Methods {
+				t.Errorf("Methods = %v, want %v", config.Methods, tt.expected.Methods)
 			}
-			if config.IncludeHeaders != tt.expected.IncludeHeaders {
-				t.Errorf("IncludeHeaders = %v, want %v", config.IncludeHeaders, tt.expected.IncludeHeaders)
+
+			if config.Headers != tt.expected.Headers {
+				t.Errorf("Headers = %v, want %v", config.Headers, tt.expected.Headers)
+			}
+
+			if config.MaxAge != tt.expected.MaxAge {
+				t.Errorf("MaxAge = %v, want %v", config.MaxAge, tt.expected.MaxAge)
 			}
 		})
 	}
 }
 
-func TestFilterSensitiveHeaders(t *testing.T) {
-	headers := http.Header{
-		"Content-Type":    []string{"application/json"},
-		"Authorization":   []string{"Bearer token123"},
-		"X-Api-Key":      []string{"secret123"},
-		"User-Agent":     []string{"test-client"},
-		"Cookie":         []string{"session=abc123"},
-		"X-Request-ID":   []string{"req-123"},
-	}
-
-	filtered := filterSensitiveHeaders(headers)
-
-	// Should include non-sensitive headers
-	if filtered["Content-Type"] != "application/json" {
-		t.Error("Content-Type should be included")
-	}
-	if filtered["User-Agent"] != "test-client" {
-		t.Error("User-Agent should be included")
-	}
-	if filtered["X-Request-ID"] != "req-123" {
-		t.Error("X-Request-ID should be included")
-	}
-
-	// Should exclude sensitive headers
-	if _, exists := filtered["Authorization"]; exists {
-		t.Error("Authorization should be filtered out")
-	}
-	if _, exists := filtered["X-Api-Key"]; exists {
-		t.Error("X-Api-Key should be filtered out")
-	}
-	if _, exists := filtered["Cookie"]; exists {
-		t.Error("Cookie should be filtered out")
-	}
-}
-
-func TestRequestLoggingMiddlewareWithConfig(t *testing.T) {
+func TestCORSConfig_Validate(t *testing.T) {
 	tests := []struct {
-		name   string
-		config RequestLoggingConfig
-		expectLogging bool
+		name    string
+		config  CORSConfig
+		wantErr bool
+		errMsg  string
 	}{
 		{
-			name: "logging enabled",
-			config: RequestLoggingConfig{
-				Enabled: true,
-				Level:   "info",
-				Format:  "json",
+			name: "valid configuration",
+			config: CORSConfig{
+				Origins: []string{"https://app.example.com", "http://localhost:3000"},
 			},
-			expectLogging: true,
+			wantErr: false,
 		},
 		{
-			name: "logging disabled",
-			config: RequestLoggingConfig{
-				Enabled: false,
-				Level:   "info",
-				Format:  "json",
+			name: "wildcard origin (valid but warns)",
+			config: CORSConfig{
+				Origins: []string{"*"},
 			},
-			expectLogging: false,
+			wantErr: false, // Valid but should warn
+		},
+		{
+			name: "invalid origin URL",
+			config: CORSConfig{
+				Origins: []string{"not-a-valid-url"},
+			},
+			wantErr: true,
+			errMsg:  "invalid origin URL",
+		},
+		{
+			name: "mixed valid and invalid origins",
+			config: CORSConfig{
+				Origins: []string{"https://app.example.com", "invalid-url"},
+			},
+			wantErr: true,
+			errMsg:  "invalid origin URL",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			middleware := RequestLoggingMiddlewareWithConfig(tt.config)
+			err := tt.config.Validate()
+			
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("Validate() expected error, got nil")
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Validate() unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestCORSConfig_IsOriginAllowed(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   CORSConfig
+		origin   string
+		expected bool
+	}{
+		{
+			name: "no origins configured",
+			config: CORSConfig{
+				Origins: []string{},
+			},
+			origin:   "https://app.example.com",
+			expected: false,
+		},
+		{
+			name: "origin allowed (exact match)",
+			config: CORSConfig{
+				Origins: []string{"https://app.example.com", "http://localhost:3000"},
+			},
+			origin:   "https://app.example.com",
+			expected: true,
+		},
+		{
+			name: "origin not allowed",
+			config: CORSConfig{
+				Origins: []string{"https://app.example.com"},
+			},
+			origin:   "http://evil.com",
+			expected: false,
+		},
+		{
+			name: "wildcard origin",
+			config: CORSConfig{
+				Origins: []string{"*"},
+			},
+			origin:   "https://anywhere.com",
+			expected: true,
+		},
+		{
+			name: "case insensitive scheme matching",
+			config: CORSConfig{
+				Origins: []string{"https://app.example.com"},
+			},
+			origin:   "HTTPS://app.example.com",
+			expected: true,
+		},
+		{
+			name: "case insensitive host matching",
+			config: CORSConfig{
+				Origins: []string{"https://app.example.com"},
+			},
+			origin:   "https://APP.EXAMPLE.COM",
+			expected: true,
+		},
+		{
+			name: "case insensitive full URL matching",
+			config: CORSConfig{
+				Origins: []string{"http://localhost:3000"},
+			},
+			origin:   "HTTP://LOCALHOST:3000",
+			expected: true,
+		},
+		{
+			name: "different scheme should not match",
+			config: CORSConfig{
+				Origins: []string{"https://app.example.com"},
+			},
+			origin:   "http://app.example.com",
+			expected: false,
+		},
+		{
+			name: "different port should not match",
+			config: CORSConfig{
+				Origins: []string{"http://localhost:3000"},
+			},
+			origin:   "http://localhost:8080",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.IsOriginAllowed(tt.origin)
+			if result != tt.expected {
+				t.Errorf("IsOriginAllowed(%q) = %v, want %v", tt.origin, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNormalizeOrigin(t *testing.T) {
+	tests := []struct {
+		name     string
+		origin   string
+		expected string
+	}{
+		{
+			name:     "lowercase scheme and host",
+			origin:   "HTTPS://APP.EXAMPLE.COM",
+			expected: "https://app.example.com",
+		},
+		{
+			name:     "preserve port",
+			origin:   "HTTP://LOCALHOST:3000",
+			expected: "http://localhost:3000",
+		},
+		{
+			name:     "preserve path case",
+			origin:   "https://API.EXAMPLE.COM/API/v1",
+			expected: "https://api.example.com/API/v1",
+		},
+		{
+			name:     "already lowercase",
+			origin:   "https://app.example.com",
+			expected: "https://app.example.com",
+		},
+		{
+			name:     "malformed URL fallback",
+			origin:   "not-a-valid-url",
+			expected: "not-a-valid-url", // Fallback to lowercase
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeOrigin(tt.origin)
+			if result != tt.expected {
+				t.Errorf("normalizeOrigin(%q) = %q, want %q", tt.origin, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCORSMiddleware(t *testing.T) {
+	middleware := CORSMiddleware()
+
+	// Create test handler
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request ID is available in context
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not found in context")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	})
+
+	// Apply middleware
+	wrappedHandler := middleware(handler)
+
+	// Create test request with Origin header
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+
+	w := httptest.NewRecorder()
+
+	// Execute request
+	wrappedHandler.ServeHTTP(w, req)
+
+	// Verify response (no CORS headers since no origins configured by default)
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Error("CORS headers should not be set without configured origins")
+	}
+
+	// Verify response body
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "test response" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "test response")
+	}
+}
+
+func TestCORSMiddlewareWithConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		config         CORSConfig
+		requestOrigin  string
+		method         string
+		expectCORS     bool
+		expectedOrigin string
+		expectedStatus int
+	}{
+		{
+			name: "CORS disabled",
+			config: CORSConfig{
+				Enabled: false,
+				Origins: []string{},
+			},
+			requestOrigin:  "http://localhost:3000",
+			method:         "GET",
+			expectCORS:     false,
+			expectedOrigin: "",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name: "allowed origin GET request",
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"http://localhost:3000"},
+				Methods: DefaultCORSMethods,
+				Headers: DefaultCORSHeaders,
+			},
+			requestOrigin:  "http://localhost:3000",
+			method:         "GET",
+			expectCORS:     true,
+			expectedOrigin: "http://localhost:3000",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name: "disallowed origin GET request",
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"http://localhost:3000"},
+				Methods: DefaultCORSMethods,
+				Headers: DefaultCORSHeaders,
+			},
+			requestOrigin:  "http://evil.com",
+			method:         "GET",
+			expectCORS:     false,
+			expectedOrigin: "",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name: "allowed origin OPTIONS preflight",
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"http://localhost:3000"},
+				Methods: DefaultCORSMethods,
+				Headers: DefaultCORSHeaders,
+			},
+			requestOrigin:  "http://localhost:3000",
+			method:         "OPTIONS",
+			expectCORS:     true,
+			expectedOrigin: "http://localhost:3000",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name: "disallowed origin OPTIONS preflight",
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"http://localhost:3000"},
+				Methods: DefaultCORSMethods,
+				Headers: DefaultCORSHeaders,
+			},
+			requestOrigin:  "http://evil.com",
+			method:         "OPTIONS",
+			expectCORS:     false,
+			expectedOrigin: "",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name: "wildcard origin",
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"*"},
+				Methods: DefaultCORSMethods,
+				Headers: DefaultCORSHeaders,
+			},
+			requestOrigin:  "http://anywhere.com",
+			method:         "GET",
+			expectCORS:     true,
+			expectedOrigin: "http://anywhere.com",
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			middleware := CORSMiddlewareWithConfig(tt.config)
 
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Verify request ID availability matches expectation
 				requestID := GetRequestID(r.Context())
-				if tt.expectLogging && requestID == "" {
-					t.Error("Request ID should be available when logging enabled")
-				}
-				if !tt.expectLogging && requestID != "" {
-					t.Error("Request ID should not be available when logging disabled")
+				if requestID == "" {
+					t.Error("Request ID not available in handler context")
 				}
 
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("test response"))
+				w.Write([]byte("handler response"))
 			})
 
 			wrappedHandler := middleware(handler)
 
-			req := httptest.NewRequest("GET", "/test", nil)
+			req := httptest.NewRequest(tt.method, "/test", nil)
+			if tt.requestOrigin != "" {
+				req.Header.Set("Origin", tt.requestOrigin)
+			}
+
 			w := httptest.NewRecorder()
 
 			wrappedHandler.ServeHTTP(w, req)
 
-			// Check request ID header presence
-			requestIDHeader := w.Header().Get("X-Request-ID")
-			if tt.expectLogging && requestIDHeader == "" {
-				t.Error("X-Request-ID header should be set when logging enabled")
-			}
-			if !tt.expectLogging && requestIDHeader != "" {
-				t.Error("X-Request-ID header should not be set when logging disabled")
+			// Verify CORS headers
+			corsOrigin := w.Header().Get("Access-Control-Allow-Origin")
+			if tt.expectCORS {
+				if corsOrigin != tt.expectedOrigin {
+					t.Errorf("Access-Control-Allow-Origin = %q, want %q", corsOrigin, tt.expectedOrigin)
+				}
+
+				if methods := w.Header().Get("Access-Control-Allow-Methods"); methods == "" {
+					t.Error("Access-Control-Allow-Methods should be set for allowed origins")
+				}
+
+				if headers := w.Header().Get("Access-Control-Allow-Headers"); headers == "" {
+					t.Error("Access-Control-Allow-Headers should be set for allowed origins")
+				}
+			} else {
+				if corsOrigin != "" {
+					t.Errorf("Access-Control-Allow-Origin should not be set, got %q", corsOrigin)
+				}
 			}
 
-			// Response should always be successful
-			if w.Code != http.StatusOK {
-				t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+			// Verify response status
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Response status = %d, want %d", w.Code, tt.expectedStatus)
+			}
+
+			// Verify handler was called for non-OPTIONS or allowed OPTIONS requests
+			if tt.method != "OPTIONS" || (tt.method == "OPTIONS" && tt.expectCORS) {
+				if tt.method != "OPTIONS" && w.Body.String() != "handler response" {
+					t.Errorf("Handler response = %q, want %q", w.Body.String(), "handler response")
+				}
 			}
 		})
 	}
 }
 
-func TestRequestLoggingMiddleware_EdgeCases(t *testing.T) {
+func TestCORSMiddleware_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupReq    func() *http.Request
-		expectError bool
+		name      string
+		setupReq  func() *http.Request
+		config    CORSConfig
+		expectErr bool
 	}{
 		{
-			name: "normal request",
+			name: "no origin header",
 			setupReq: func() *http.Request {
 				return httptest.NewRequest("GET", "/test", nil)
 			},
-			expectError: false,
-		},
-		{
-			name: "request with very long URL",
-			setupReq: func() *http.Request {
-				longPath := "/test/" + strings.Repeat("a", 1000)
-				return httptest.NewRequest("GET", longPath, nil)
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"http://localhost:3000"},
 			},
-			expectError: false,
+			expectErr: false,
 		},
 		{
-			name: "request with malformed headers",
+			name: "empty origin header",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/test", nil)
-				// Add various header edge cases
-				req.Header.Set("X-Test-Header", "value with\nnewline")
-				req.Header.Set("X-Empty-Header", "")
+				req.Header.Set("Origin", "")
 				return req
 			},
-			expectError: false,
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"http://localhost:3000"},
+			},
+			expectErr: false,
 		},
 		{
-			name: "request with sensitive headers",
+			name: "malformed origin header",
 			setupReq: func() *http.Request {
 				req := httptest.NewRequest("GET", "/test", nil)
-				req.Header.Set("Authorization", "Bearer secret-token")
-				req.Header.Set("Cookie", "session=secret-session")
-				req.Header.Set("X-API-Key", "secret-api-key")
+				req.Header.Set("Origin", "not-a-valid-url")
 				return req
 			},
-			expectError: false,
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"http://localhost:3000"},
+			},
+			expectErr: false,
+		},
+		{
+			name: "case sensitive origin matching",
+			setupReq: func() *http.Request {
+				req := httptest.NewRequest("GET", "/test", nil)
+				req.Header.Set("Origin", "HTTP://LOCALHOST:3000")
+				return req
+			},
+			config: CORSConfig{
+				Enabled: true,
+				Origins: []string{"http://localhost:3000"},
+			},
+			expectErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := RequestLoggingConfig{
-				Enabled: true,
-				Level:   "info",
-				Format:  "json",
-				IncludeHeaders: true,
-			}
-			middleware := RequestLoggingMiddlewareWithConfig(config)
+			middleware := CORSMiddlewareWithConfig(tt.config)
 
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestID := GetRequestID(r.Context())
@@ -1031,7 +950,7 @@ func TestRequestLoggingMiddleware_EdgeCases(t *testing.T) {
 			// Should not panic or fail regardless of request content
 			wrappedHandler.ServeHTTP(w, req)
 
-			if tt.expectError {
+			if tt.expectErr {
 				if w.Code < 400 {
 					t.Errorf("Expected error response, got status %d", w.Code)
 				}
@@ -1039,87 +958,75 @@ func TestRequestLoggingMiddleware_EdgeCases(t *testing.T) {
 				if w.Code != http.StatusOK {
 					t.Errorf("Expected success response, got status %d", w.Code)
 				}
-				
-				// Verify request ID header is always present when logging enabled
-				if w.Header().Get("X-Request-ID") == "" {
-					t.Error("X-Request-ID header should be present")
-				}
 			}
 		})
 	}
 }
 
-func TestRequestLoggingMiddleware_HighConcurrency(t *testing.T) {
-	config := RequestLoggingConfig{
+func TestCORSMiddleware_RequestCorrelation(t *testing.T) {
+	config := CORSConfig{
 		Enabled: true,
-		Level:   "info",
-		Format:  "json",
+		Origins: []string{"http://localhost:3000"},
+		Methods: DefaultCORSMethods,
+		Headers: DefaultCORSHeaders,
 	}
-	middleware := RequestLoggingMiddlewareWithConfig(config)
+
+	middleware := CORSMiddlewareWithConfig(config)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request ID is available for correlation
 		requestID := GetRequestID(r.Context())
 		if requestID == "" {
-			t.Error("Request ID should be available")
+			t.Error("Request ID should be available for CORS correlation")
 		}
+
+		// Verify request ID format
+		if len(requestID) != RequestIDHexLength {
+			t.Errorf("Request ID length = %d, want %d", len(requestID), RequestIDHexLength)
+		}
+
 		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("correlation test"))
 	})
 
-	wrappedHandler := middleware(handler)
+	// We need to wrap with request logging middleware to generate request ID
+	wrappedHandler := RequestLoggingMiddleware()(middleware(handler))
 
-	// Test concurrent request ID generation
-	const concurrency = 100
-	requestIDs := make(chan string, concurrency)
-	
-	var wg sync.WaitGroup
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			
-			req := httptest.NewRequest("GET", "/test", nil)
-			w := httptest.NewRecorder()
-			
-			wrappedHandler.ServeHTTP(w, req)
-			
-			requestID := w.Header().Get("X-Request-ID")
-			if requestID != "" {
-				requestIDs <- requestID
-			}
-		}()
-	}
-	
-	wg.Wait()
-	close(requestIDs)
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
 
-	// Verify all request IDs are unique
-	seen := make(map[string]bool)
-	count := 0
-	for requestID := range requestIDs {
-		if seen[requestID] {
-			t.Errorf("Duplicate request ID generated: %s", requestID)
-		}
-		seen[requestID] = true
-		count++
-		
-		// Verify format
-		if len(requestID) != RequestIDHexLength {
-			t.Errorf("Invalid request ID length: %d, want %d", len(requestID), RequestIDHexLength)
-		}
+	w := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(w, req)
+
+	// Verify request ID was added by request logging middleware
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Error("X-Request-ID header should be present from request logging middleware")
 	}
-	
-	if count != concurrency {
-		t.Errorf("Expected %d unique request IDs, got %d", concurrency, count)
+
+	// Verify CORS headers were applied
+	if w.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Error("CORS headers should be applied for allowed origin")
+	}
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "correlation test" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "correlation test")
 	}
 }
 ```
 
 ### Step 5: Add Server Integration Tests
 
-**File**: `internal/server/server_test.go` (add these tests)
+**File**: `internal/server/server_test.go` (add these tests to existing file)
 
 ```go
-func TestServer_RequestLoggingMiddleware(t *testing.T) {
+func TestServer_CORSMiddleware(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -1130,8 +1037,18 @@ func TestServer_RequestLoggingMiddleware(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Add request logging middleware with default configuration
-	server.Middleware().Use(RequestLoggingMiddleware())
+	// Configure CORS middleware with specific origins
+	corsConfig := CORSConfig{
+		Enabled: true,
+		Origins: []string{"http://localhost:3000", "https://app.example.com"},
+		Methods: DefaultCORSMethods,
+		Headers: DefaultCORSHeaders,
+	}
+
+	// Add middleware with conditional application
+	server.Middleware().
+		Use(RequestLoggingMiddleware()).
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig))
 
 	// Set test handler
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1141,13 +1058,8 @@ func TestServer_RequestLoggingMiddleware(t *testing.T) {
 			t.Error("Request ID not available in handler context")
 		}
 
-		// Verify request ID format
-		if len(requestID) != RequestIDHexLength {
-			t.Errorf("Request ID length = %d, want %d", len(requestID), RequestIDHexLength)
-		}
-
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
+		w.Write([]byte("CORS test response"))
 	}))
 
 	// Start server
@@ -1161,25 +1073,25 @@ func TestServer_RequestLoggingMiddleware(t *testing.T) {
 		}
 	}()
 
-	// Test request logging integration
+	// Test CORS request integration
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("User-Agent", "test-client")
+	req.Header.Set("Origin", "http://localhost:3000")
 
 	w := httptest.NewRecorder()
 
 	// Execute request through server
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify request ID header was added
+	// Verify request ID header was added by request logging middleware
 	requestID := w.Header().Get("X-Request-ID")
 	if requestID == "" {
-		t.Error("X-Request-ID header not set by middleware")
+		t.Error("X-Request-ID header not set by request logging middleware")
 	}
 
-	// Verify request ID format
-	if len(requestID) != RequestIDHexLength {
-		t.Errorf("Request ID format incorrect: got %d chars, want %d", len(requestID), RequestIDHexLength)
+	// Verify CORS headers were added by CORS middleware
+	corsOrigin := w.Header().Get("Access-Control-Allow-Origin")
+	if corsOrigin != "http://localhost:3000" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", corsOrigin, "http://localhost:3000")
 	}
 
 	// Verify response
@@ -1187,12 +1099,12 @@ func TestServer_RequestLoggingMiddleware(t *testing.T) {
 		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	if w.Body.String() != "test response" {
-		t.Errorf("Response body = %q, want %q", w.Body.String(), "test response")
+	if w.Body.String() != "CORS test response" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "CORS test response")
 	}
 }
 
-func TestServer_RequestLoggingWithCustomConfig(t *testing.T) {
+func TestServer_CORSMiddleware_Conditional(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -1203,14 +1115,16 @@ func TestServer_RequestLoggingWithCustomConfig(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Add request logging middleware with custom configuration
-	loggingConfig := RequestLoggingConfig{
-		Enabled:        true,
-		Level:          "info",
-		Format:         "json",
-		IncludeHeaders: true,
+	// Configure CORS middleware without origins (should not be applied)
+	corsConfig := CORSConfig{
+		Enabled: false,
+		Origins: []string{}, // Empty origins
 	}
-	server.Middleware().Use(RequestLoggingMiddlewareWithConfig(loggingConfig))
+
+	// Add middleware with conditional application
+	server.Middleware().
+		Use(RequestLoggingMiddleware()).
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)) // Should not apply
 
 	// Set test handler
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1220,7 +1134,7 @@ func TestServer_RequestLoggingWithCustomConfig(t *testing.T) {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("custom config test"))
+		w.Write([]byte("no CORS test"))
 	}))
 
 	// Start server
@@ -1234,20 +1148,22 @@ func TestServer_RequestLoggingWithCustomConfig(t *testing.T) {
 		}
 	}()
 
-	// Test with various headers including sensitive ones
+	// Test request without CORS
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "Bearer token123")
-	req.Header.Set("X-API-Key", "secret123")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "test-client")
+	req.Header.Set("Origin", "http://localhost:3000")
 
 	w := httptest.NewRecorder()
 
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify request ID header was added
+	// Verify request ID header was added by request logging middleware
 	if w.Header().Get("X-Request-ID") == "" {
-		t.Error("X-Request-ID header not set by middleware")
+		t.Error("X-Request-ID header should be present from request logging")
+	}
+
+	// Verify NO CORS headers were added (middleware not applied)
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Error("CORS headers should not be present when middleware not applied")
 	}
 
 	// Verify response
@@ -1255,12 +1171,12 @@ func TestServer_RequestLoggingWithCustomConfig(t *testing.T) {
 		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	if w.Body.String() != "custom config test" {
-		t.Errorf("Response body = %q, want %q", w.Body.String(), "custom config test")
+	if w.Body.String() != "no CORS test" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "no CORS test")
 	}
 }
 
-func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
+func TestServer_CORSMiddleware_Preflight(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -1271,32 +1187,23 @@ func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Add multiple middleware including request logging
+	// Configure CORS middleware with origins
+	corsConfig := CORSConfig{
+		Enabled: true,
+		Origins: []string{"http://localhost:3000"},
+		Methods: DefaultCORSMethods,
+		Headers: DefaultCORSHeaders,
+	}
+
+	// Add middleware chain
 	server.Middleware().
 		Use(RequestLoggingMiddleware()).
-		Use(func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Verify request ID is available in other middleware
-				requestID := GetRequestID(r.Context())
-				if requestID == "" {
-					t.Error("Request ID not available in subsequent middleware")
-				}
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig))
 
-				w.Header().Set("X-Test-Middleware", "applied")
-				next.ServeHTTP(w, r)
-			})
-		})
-
-	// Set test handler
+	// Set test handler (should not be called for OPTIONS preflight)
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request ID propagated to handler
-		requestID := GetRequestID(r.Context())
-		if requestID == "" {
-			t.Error("Request ID not available in final handler")
-		}
-
+		t.Error("Handler should not be called for preflight OPTIONS request")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("middleware chain test"))
 	}))
 
 	// Start server
@@ -1310,29 +1217,92 @@ func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
 		}
 	}()
 
-	// Test middleware chain
-	req := httptest.NewRequest("GET", "/test", nil)
+	// Test preflight OPTIONS request
+	req := httptest.NewRequest("OPTIONS", "/test", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+
 	w := httptest.NewRecorder()
 
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify both middleware applied
+	// Verify request ID header was added
 	if w.Header().Get("X-Request-ID") == "" {
-		t.Error("Request logging middleware not applied")
+		t.Error("X-Request-ID header should be present")
 	}
 
-	if w.Header().Get("X-Test-Middleware") != "applied" {
-		t.Error("Test middleware not applied")
+	// Verify CORS preflight headers
+	if w.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Error("CORS origin header should be set for preflight")
 	}
 
-	// Verify response
+	if w.Header().Get("Access-Control-Allow-Methods") == "" {
+		t.Error("CORS methods header should be set for preflight")
+	}
+
+	if w.Header().Get("Access-Control-Allow-Headers") == "" {
+		t.Error("CORS headers header should be set for preflight")
+	}
+
+	// Verify preflight response status
 	if w.Code != http.StatusOK {
-		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+		t.Errorf("Preflight response status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+```
+
+### Step 6: Create Usage Example
+
+**File**: `examples/cors_usage.go` (optional example file)
+
+```go
+package main
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+
+	"cipher-hub/internal/server"
+)
+
+func main() {
+	// Configure structured logging
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	config := server.ServerConfig{
+		Host: "localhost",
+		Port: "8080",
 	}
 
-	if w.Body.String() != "middleware chain test" {
-		t.Errorf("Response body = %q, want %q", w.Body.String(), "middleware chain test")
+	srv, err := server.NewServer(config)
+	if err != nil {
+		panic(err)
 	}
+
+	// Configure CORS with specific origins
+	corsConfig := server.CORSConfig{
+		Enabled: true,
+		Origins: []string{"http://localhost:3000", "https://app.example.com"},
+	}
+
+	// Configure middleware with conditional CORS
+	srv.Middleware().
+		Use(server.RequestLoggingMiddleware()).                                         // Always log requests
+		UseIf(len(corsConfig.Origins) > 0, server.CORSMiddlewareWithConfig(corsConfig)) // CORS when origins configured
+
+	// Set handler
+	srv.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := server.GetRequestID(r.Context())
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(fmt.Sprintf("Hello! Request ID: %s", requestID)))
+	}))
+
+	fmt.Println("CORS middleware integration example compiled successfully")
+	fmt.Printf("Middleware count: %d\n", srv.Middleware().Count())
+	fmt.Printf("CORS origins configured: %v\n", corsConfig.Origins)
 }
 ```
 
@@ -1340,64 +1310,71 @@ func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
 
 ## Security Considerations
 
-### Request ID Security
+### CORS Security Patterns
 ```go
-// Correct: Cryptographically secure request ID generation
-func generateRequestID() (string, error) {
-    bytes := make([]byte, 8)
-    if _, err := rand.Read(bytes); err != nil {
-        return "", fmt.Errorf("failed to generate request ID: %w", err)
+// Correct: Restrictive CORS policy by default
+config := CORSConfig{
+    Origins: []string{"https://app.example.com"}, // Specific origins only
+}
+
+// Incorrect: Overly permissive CORS policy
+config := CORSConfig{
+    Origins: []string{"*"}, // Allows all origins - security risk
+}
+```
+
+### Origin Validation Security
+```go
+// Correct: Exact origin matching
+func (c *CORSConfig) IsOriginAllowed(origin string) bool {
+    for _, allowedOrigin := range c.Origins {
+        if allowedOrigin == origin { // Exact match required
+            return true
+        }
     }
-    return hex.EncodeToString(bytes), nil
+    return false
 }
 
-// Incorrect: Predictable or weak request ID generation
-func generateRequestID() string {
-    return fmt.Sprintf("%d", time.Now().UnixNano()) // Predictable
+// Incorrect: Substring matching (vulnerable to subdomain attacks)
+if strings.Contains(allowedOrigin, origin) { // NEVER do this
+    return true
 }
 ```
 
-### Logging Security Patterns
+### Preflight Request Handling Security
 ```go
-// Correct: Safe request logging without sensitive data
-slog.Info("Request started",
-    "request_id", requestID,
-    "method", r.Method,
-    "path", r.URL.Path,
-    "remote_addr", r.RemoteAddr,
-    "user_agent", r.UserAgent())
-
-// Incorrect: Logging sensitive data
-slog.Info("Request started",
-    "request_id", requestID,
-    "authorization", r.Header.Get("Authorization"), // NEVER log auth tokens
-    "request_body", body)                           // NEVER log request bodies
-```
-
-### Error Handling Security
-```go
-// Correct: Secure error handling for request ID generation failure
-requestID, err := generateRequestID()
-if err != nil {
-    slog.Error("Failed to generate request ID", "error", err)
-    http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+// Correct: Secure preflight handling with origin validation
+if r.Method == "OPTIONS" {
+    if originAllowed {
+        w.WriteHeader(http.StatusOK)
+    } else {
+        w.WriteHeader(http.StatusForbidden) // Reject disallowed origins
+    }
     return
 }
 
-// Incorrect: Exposing internal errors to clients
-if err != nil {
-    http.Error(w, err.Error(), http.StatusInternalServerError) // Exposes internal details
+// Incorrect: Always allowing preflight requests
+if r.Method == "OPTIONS" {
+    w.WriteHeader(http.StatusOK) // Security risk - no origin validation
+    return
 }
 ```
 
-### Context Security
+### Environment Configuration Security
 ```go
-// Correct: Type-safe context key usage
-type contextKey string
-const requestIDCtxKey contextKey = "request_id"
+// Correct: Secure defaults with explicit configuration required
+func (c *CORSConfig) ApplyDefaults() {
+    // Secure default: disabled unless explicitly configured
+    if !c.Enabled && len(c.Origins) == 0 {
+        c.Enabled = false // No CORS headers by default
+    }
+}
 
-// Incorrect: String context keys (collision risk)
-const requestIDKey = "request_id" // string type, collision-prone
+// Incorrect: Permissive defaults
+func (c *CORSConfig) ApplyDefaults() {
+    c.Enabled = true                    // Dangerous default
+    c.Origins = []string{"*"}           // Allows all origins
+}
 ```
 
 ---
@@ -1406,53 +1383,44 @@ const requestIDKey = "request_id" // string type, collision-prone
 
 ### Unit Testing Requirements
 
-#### Request ID Generation Testing
-- [ ] Test successful request ID generation with proper format validation
-- [ ] Test request ID uniqueness across multiple generations
-- [ ] Test hex format validation (16 characters, valid hex digits)
-- [ ] Test error handling for crypto/rand failures (mocking may be required)
+#### CORS Configuration Testing
+- [ ] Test `LoadFromEnv()` with various environment variable combinations
+- [ ] Test `ApplyDefaults()` with secure default behavior validation
+- [ ] Test `IsOriginAllowed()` with exact matching and security edge cases
+- [ ] Test environment variable parsing with malformed input handling
 
-#### Context Propagation Testing
-- [ ] Test `WithRequestID()` adds request ID to context correctly
-- [ ] Test `GetRequestID()` retrieves request ID from context
-- [ ] Test `GetRequestID()` returns empty string for missing or wrong-type values
-- [ ] Test context key type safety
+#### CORS Middleware Testing
+- [ ] Test middleware with enabled/disabled configuration
+- [ ] Test origin validation with allowed and disallowed origins
+- [ ] Test preflight OPTIONS request handling with proper status codes
+- [ ] Test CORS header application for various request types
+- [ ] Test wildcard origin handling (if supported)
 
-#### Response Writer Testing
-- [ ] Test `newResponseWriter()` creates wrapper with correct defaults
-- [ ] Test `WriteHeader()` captures status codes correctly
-- [ ] Test `Write()` captures byte counts and delegates properly
-- [ ] Test `StatusCode()` and `BytesWritten()` accessor methods
-- [ ] Test multiple writes accumulate byte counts correctly
-
-#### Middleware Testing
-- [ ] Test middleware applies request ID generation and context propagation
-- [ ] Test middleware adds `X-Request-ID` header to responses
-- [ ] Test middleware wraps ResponseWriter for metrics capture
-- [ ] Test middleware handles request ID generation failures gracefully
-- [ ] Test middleware logs request start and completion events
+#### Edge Case Testing
+- [ ] Test requests without Origin header
+- [ ] Test requests with empty or malformed Origin headers
+- [ ] Test case sensitivity in origin matching
+- [ ] Test middleware behavior with empty origins configuration
 
 ### Integration Testing Requirements
 
 #### Server Integration Testing
-- [ ] Test request logging middleware integrates with server lifecycle
-- [ ] Test middleware chain execution with request logging as first middleware
-- [ ] Test request ID propagation through multiple middleware layers
-- [ ] Test request logging works with various handler types
-- [ ] Test middleware performance impact is minimal
+- [ ] Test CORS middleware integration with server lifecycle
+- [ ] Test conditional middleware application using `UseIf()` pattern
+- [ ] Test middleware chain execution with request logging + CORS
+- [ ] Test CORS with various handler types and response scenarios
 
-#### End-to-End Testing
-- [ ] Test complete request flow with logging and response headers
-- [ ] Test request correlation across multiple requests
-- [ ] Test logging output format and structured fields
-- [ ] Test middleware behavior with different HTTP methods and paths
-- [ ] Test error scenarios and graceful degradation
+#### Request Correlation Testing
+- [ ] Test CORS events are logged with request correlation IDs
+- [ ] Test request ID propagation through CORS middleware
+- [ ] Test structured logging output includes CORS-specific fields
+- [ ] Test preflight request logging with correlation
 
-### Performance Testing Requirements
-- [ ] Test request ID generation performance (should be sub-millisecond)
-- [ ] Test middleware overhead is minimal (< 1ms additional latency)
-- [ ] Test memory usage is reasonable for response writer wrapping
-- [ ] Test logging performance with structured output
+### Security Testing Requirements
+- [ ] Test CORS policy enforcement prevents unauthorized cross-origin requests
+- [ ] Test preflight request handling rejects disallowed origins
+- [ ] Test exact origin matching prevents subdomain attacks
+- [ ] Test secure defaults prevent accidental permissive configuration
 
 ---
 
@@ -1463,7 +1431,7 @@ const requestIDKey = "request_id" // string type, collision-prone
 # Navigate to project root
 cd cipher-hub/
 
-# Verify clean build with request logging middleware
+# Verify clean build with CORS middleware
 go build ./...
 
 # Expected: No compilation errors
@@ -1471,29 +1439,27 @@ go build ./...
 
 ### Step 2: Unit Test Verification
 ```bash
-# Run request logging specific tests
-go test ./internal/server -run "TestGenerateRequestID\|TestWithRequestID\|TestGetRequestID\|TestResponseWriter\|TestRequestLoggingMiddleware" -v
+# Run CORS-specific tests
+go test ./internal/server -run "TestCORS" -v
 
-# Expected: All request logging tests pass
+# Expected: All CORS tests pass
 # Sample output:
-# === RUN   TestGenerateRequestID
-# === RUN   TestWithRequestID  
-# === RUN   TestGetRequestID
-# === RUN   TestNewResponseWriter
-# === RUN   TestResponseWriter_WriteHeader
-# === RUN   TestResponseWriter_Write
-# === RUN   TestRequestLoggingMiddleware
-# --- PASS: All request logging tests should pass
+# === RUN   TestCORSConfig_LoadFromEnv
+# === RUN   TestCORSConfig_IsOriginAllowed
+# === RUN   TestCORSMiddleware
+# === RUN   TestCORSMiddlewareWithConfig
+# --- PASS: All CORS tests should pass
 ```
 
 ### Step 3: Server Integration Test Verification
 ```bash
-# Run server integration tests with request logging
-go test ./internal/server -run "TestServer_RequestLogging" -v
+# Run server integration tests with CORS
+go test ./internal/server -run "TestServer_CORS" -v
 
 # Expected: All server integration tests pass
-# === RUN   TestServer_RequestLoggingMiddleware
-# === RUN   TestServer_RequestLoggingWithOtherMiddleware
+# === RUN   TestServer_CORSMiddleware
+# === RUN   TestServer_CORSMiddleware_Conditional
+# === RUN   TestServer_CORSMiddleware_Preflight
 # --- PASS: All integration tests should pass
 ```
 
@@ -1503,40 +1469,78 @@ go test ./internal/server -run "TestServer_RequestLogging" -v
 go test ./internal/server -v
 
 # Expected: All existing and new tests pass
-# Verify request logging doesn't break existing functionality
+# Verify CORS middleware doesn't break existing functionality
 ```
 
-### Step 5: Code Quality Verification
+### Step 5: Environment Variable Configuration Test
 ```bash
-# Format and lint checks
-go fmt ./...
-go vet ./...
+# Test enhanced CORS configuration loading
+cat > test_cors_config.go << 'EOF'
+package main
 
-# Expected: No issues reported
+import (
+    "fmt"
+    "os"
+    "cipher-hub/internal/server"
+)
+
+func main() {
+    // Set comprehensive test environment variables
+    os.Setenv("CIPHER_HUB_CORS_ENABLED", "true")
+    os.Setenv("CIPHER_HUB_CORS_ORIGINS", "https://app.example.com,https://admin.example.com")
+    os.Setenv("CIPHER_HUB_CORS_METHODS", "GET, POST, PUT, DELETE")
+    os.Setenv("CIPHER_HUB_CORS_HEADERS", "Content-Type, Authorization, X-Custom-Header")
+    os.Setenv("CIPHER_HUB_CORS_MAX_AGE", "7200")
+    
+    config := server.CORSConfig{}
+    config.ApplyDefaults()
+    config.LoadFromEnv()
+    
+    // Validate configuration
+    if err := config.Validate(); err != nil {
+        fmt.Printf("Configuration validation failed: %v\n", err)
+        return
+    }
+    
+    fmt.Printf("CORS Enabled: %v\n", config.Enabled)
+    fmt.Printf("CORS Origins: %v\n", config.Origins)
+    fmt.Printf("CORS Methods: %s\n", config.Methods)
+    fmt.Printf("CORS Headers: %s\n", config.Headers)
+    fmt.Printf("CORS Max Age: %s\n", config.MaxAge)
+    
+    // Test case-insensitive origin validation
+    fmt.Printf("app.example.com (https) allowed: %v\n", config.IsOriginAllowed("https://app.example.com"))
+    fmt.Printf("APP.EXAMPLE.COM (HTTPS) allowed: %v\n", config.IsOriginAllowed("HTTPS://APP.EXAMPLE.COM"))
+    fmt.Printf("evil.com allowed: %v\n", config.IsOriginAllowed("https://evil.com"))
+    
+    // Test wildcard warning
+    fmt.Println("\nTesting wildcard configuration...")
+    wildcardConfig := server.CORSConfig{Origins: []string{"*"}}
+    fmt.Printf("Wildcard (*) allows anything: %v\n", wildcardConfig.IsOriginAllowed("https://anywhere.com"))
+}
+EOF
+
+go run test_cors_config.go
+rm test_cors_config.go
+
+# Expected output:
+# CORS Enabled: true
+# CORS Origins: [https://app.example.com https://admin.example.com]
+# CORS Methods: GET, POST, PUT, DELETE
+# CORS Headers: Content-Type, Authorization, X-Custom-Header
+# CORS Max Age: 7200
+# app.example.com (https) allowed: true
+# APP.EXAMPLE.COM (HTTPS) allowed: true
+# evil.com allowed: false
+# 
+# Testing wildcard configuration...
+# Wildcard (*) allows anything: true
 ```
 
-### Step 6: Documentation Verification
+### Step 6: CORS Integration Test
 ```bash
-# Verify go doc generates proper documentation
-go doc -all ./internal/server | grep -A 10 "func RequestLoggingMiddleware"
-go doc -all ./internal/server | grep -A 5 "func generateRequestID"
-
-# Expected: Complete documentation for request logging functions
-```
-
-### Step 7: Test Coverage Analysis
-```bash
-# Check test coverage including request logging
-go test ./internal/server -cover -coverprofile=coverage.out
-go tool cover -func=coverage.out | grep request_logging
-
-# Expected: High coverage for request logging functionality (>95%)
-```
-
-### Step 8: Request Logging Integration Verification
-```bash
-# Create integration test program
-cat > test_request_logging.go << 'EOF'
+# Create enhanced integration test program
+cat > test_cors_integration.go << 'EOF'
 package main
 
 import (
@@ -1561,17 +1565,25 @@ func main() {
         panic(err)
     }
     
-    // Configure middleware with request logging
+    // Configure enhanced CORS with specific origins and custom settings
+    corsConfig := server.CORSConfig{
+        Enabled: true,
+        Origins: []string{"https://app.example.com", "https://admin.example.com"},
+        Methods: "GET, POST, PUT, DELETE, OPTIONS",
+        Headers: "Content-Type, Authorization, X-Request-ID, X-Custom-Header",
+        MaxAge:  "7200",
+    }
+    
+    // Validate CORS configuration
+    if err := corsConfig.Validate(); err != nil {
+        fmt.Printf("CORS configuration validation failed: %v\n", err)
+        return
+    }
+    
+    // Configure middleware with conditional CORS
     srv.Middleware().
         Use(server.RequestLoggingMiddleware()).
-        Use(func(next http.Handler) http.Handler {
-            return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                // Demonstrate request ID access in other middleware
-                requestID := server.GetRequestID(r.Context())
-                slog.Info("Custom middleware executed", "request_id", requestID)
-                next.ServeHTTP(w, r)
-            })
-        })
+        UseIf(len(corsConfig.Origins) > 0, server.CORSMiddlewareWithConfig(corsConfig))
     
     // Set handler
     srv.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1580,204 +1592,195 @@ func main() {
         w.Write([]byte(fmt.Sprintf("Hello! Request ID: %s", requestID)))
     }))
     
-    fmt.Println("Request logging middleware integration test compiled successfully")
+    fmt.Println("Enhanced CORS middleware integration test compiled successfully")
     fmt.Printf("Middleware count: %d\n", srv.Middleware().Count())
+    fmt.Printf("CORS enabled with origins: %v\n", corsConfig.Origins)
+    fmt.Printf("CORS methods: %s\n", corsConfig.Methods)
+    fmt.Printf("CORS headers: %s\n", corsConfig.Headers)
+    fmt.Printf("CORS max age: %s seconds\n", corsConfig.MaxAge)
+    
+    // Test case-insensitive origin matching
+    fmt.Printf("\nCase-insensitive origin matching:")
+    fmt.Printf("\n  https://app.example.com allowed: %v", corsConfig.IsOriginAllowed("https://app.example.com"))
+    fmt.Printf("\n  HTTPS://APP.EXAMPLE.COM allowed: %v", corsConfig.IsOriginAllowed("HTTPS://APP.EXAMPLE.COM"))
 }
 EOF
 
-go run test_request_logging.go
-rm test_request_logging.go
+go run test_cors_integration.go
+rm test_cors_integration.go
 
-# Expected: "Request logging middleware integration test compiled successfully"
+# Expected: "Enhanced CORS middleware integration test compiled successfully"
 # Expected: "Middleware count: 2"
+# Expected: "CORS enabled with origins: [https://app.example.com https://admin.example.com]"
+# Expected: "CORS methods: GET, POST, PUT, DELETE, OPTIONS"
+# Expected: "CORS headers: Content-Type, Authorization, X-Request-ID, X-Custom-Header"
+# Expected: "CORS max age: 7200 seconds"
+# Expected: Case-insensitive origin matching results
 ```
 
-### Step 9: Logging Output Verification
+### Step 7: Code Quality Verification
 ```bash
-# Test actual logging output format
-cat > test_logging_output.go << 'EOF'
-package main
+# Format and lint checks
+go fmt ./...
+go vet ./...
 
-import (
-    "log/slog"
-    "net/http"
-    "net/http/httptest"
-    "os"
-    "cipher-hub/internal/server"
-)
+# Expected: No issues reported
+```
 
-func main() {
-    // Configure JSON logging
-    slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-    
-    middleware := server.RequestLoggingMiddleware()
-    
-    handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte("test response"))
-    })
-    
-    wrappedHandler := middleware(handler)
-    
-    req := httptest.NewRequest("GET", "/test", nil)
-    req.RemoteAddr = "127.0.0.1:12345"
-    req.Header.Set("User-Agent", "test-client")
-    
-    w := httptest.NewRecorder()
-    wrappedHandler.ServeHTTP(w, req)
-    
-    println("Logging output test completed - check JSON logs above")
-}
-EOF
+### Step 8: Documentation Verification
+```bash
+# Verify go doc generates proper documentation
+go doc -all ./internal/server | grep -A 10 "func CORSMiddleware"
+go doc -all ./internal/server | grep -A 5 "type CORSConfig"
 
-go run test_logging_output.go
-rm test_logging_output.go
-
-# Expected: JSON log entries for request start and completion
+# Expected: Complete documentation for CORS functions and types
 ```
 
 ---
 
 ## Completion Criteria
 
-### ✅ **Step 2.1.2.2 is complete when:**
+### ✅ **Step 2.1.2.3 is complete when:**
 
-1. **Request ID Generation with Constants**:
-   - [x] `generateRequestID()` function using `crypto/rand` with hex encoding
-   - [x] `RequestIDBytes` and `RequestIDHexLength` constants for maintainability
-   - [x] Consistent error handling with `RequestLoggingErrorPrefix`
-   - [x] Comprehensive testing for format, uniqueness, and high-concurrency scenarios
+1. **Enhanced CORS Environment Variables**:
+   - [x] `EnvCORSEnabled`, `EnvCORSOrigins`, `EnvCORSMethods`, `EnvCORSHeaders`, `EnvCORSMaxAge` constants added to `internal/config/env.go`
+   - [x] Environment variables follow established naming convention: `CIPHER_HUB_CORS_*`
+   - [x] Integration with existing centralized configuration management using helper functions
 
-2. **Configuration Support**:
-   - [x] `RequestLoggingConfig` structure with environment variable loading
-   - [x] `LoadFromEnv()` method following established patterns
+2. **Advanced CORS Configuration Structure**:
+   - [x] `CORSConfig` struct with `Enabled`, `Origins`, `Methods`, `Headers`, `MaxAge`, `Credentials` fields
+   - [x] `LoadFromEnv()` method using established configuration helper functions
    - [x] `ApplyDefaults()` method with secure default values
-   - [x] `RequestLoggingMiddlewareWithConfig()` for custom configuration
-   - [x] Logging enable/disable functionality
+   - [x] `Validate()` method with comprehensive URL validation and security warnings
+   - [x] `IsOriginAllowed()` method with case-insensitive origin matching
 
-3. **Enhanced Context Propagation**:
-   - [x] Typed context keys for type-safe request ID storage
-   - [x] `WithRequestID()` and `GetRequestID()` helper functions
-   - [x] Request ID propagation through middleware chain and handlers
-   - [x] Safe handling of missing or wrong-type context values
+3. **Security-Enhanced CORS Middleware Implementation**:
+   - [x] `CORSMiddleware()` function with configuration validation and error handling
+   - [x] `CORSMiddlewareWithConfig()` function for custom configuration
+   - [x] Preflight OPTIONS request handling with appropriate status codes
+   - [x] CORS header application based on validated origin matching
+   - [x] Security warnings for wildcard origin usage
+   - [x] Enhanced logging for security monitoring and audit trails
 
-4. **Response Writer Wrapping**:
-   - [x] `responseWriter` struct wrapping `http.ResponseWriter`
-   - [x] Status code capture via `WriteHeader()` method
-   - [x] Byte count tracking via `Write()` method
-   - [x] Accessor methods for captured metrics
+4. **Case-Insensitive Origin Matching**:
+   - [x] `normalizeOrigin()` function for RFC-compliant URL normalization
+   - [x] Lowercase scheme and host matching while preserving path case
+   - [x] Comprehensive test coverage for various case scenarios
+   - [x] Security-conscious exact matching preventing subdomain attacks
 
-5. **Advanced Request Logging Middleware**:
-   - [x] Both simple and configurable middleware functions
-   - [x] Structured logging with consistent field names using constants
-   - [x] Performance optimization with log level checking
-   - [x] Sensitive header filtering for security
-   - [x] Optional header inclusion for debugging
-   - [x] Request ID header addition (`X-Request-ID`)
+5. **Enhanced Request Correlation Integration**:
+   - [x] CORS events logged with request correlation IDs using `GetRequestID()`
+   - [x] Structured logging with CORS-specific field names and security context
+   - [x] Preflight request logging with detailed security information
+   - [x] Security event logging for rejected requests with correlation
+   - [x] Integration with existing request logging middleware
 
-6. **Security Enhancements**:
-   - [x] `SensitiveHeaders` map for consistent header filtering
-   - [x] `filterSensitiveHeaders()` function preventing data leaks
-   - [x] Consistent error prefixes with `RequestLoggingErrorPrefix`
-   - [x] Safe logging practices with no sensitive data exposure
+6. **Comprehensive Security Features**:
+   - [x] Secure defaults (no CORS headers unless origins explicitly configured)
+   - [x] Configuration validation preventing malformed origin URLs
+   - [x] Security warnings for wildcard origins with production recommendations
+   - [x] Preflight request validation with forbidden responses for disallowed origins
+   - [x] Enhanced logging for security monitoring and threat detection
 
-7. **Server Integration**:
-   - [x] Middleware integrates with existing middleware stack
-   - [x] Request ID propagation works with other middleware  
-   - [x] Server lifecycle integration maintains all functionality
+7. **Advanced Server Integration**:
+   - [x] Conditional middleware application using `UseIf()` pattern
+   - [x] Integration with existing middleware stack and request logging
+   - [x] Configuration validation during middleware setup
    - [x] Method chaining support for fluent configuration
-   - [x] Configuration-based middleware deployment
+   - [x] Thread safety and performance standards maintained
 
-8. **Comprehensive Testing**:
-   - [x] Unit tests for all request logging components including configuration
-   - [x] Integration tests with server and custom configuration
-   - [x] Edge case testing including malformed requests and long URLs
-   - [x] High-concurrency testing for request ID uniqueness
-   - [x] Sensitive header filtering tests
-   - [x] Environment variable configuration tests
-   - [x] Performance testing for minimal overhead
+8. **Enhanced Testing Coverage**:
+   - [x] Unit tests for enhanced CORS configuration loading and validation
+   - [x] Case-insensitive origin matching tests with comprehensive scenarios
+   - [x] Configuration validation tests including malformed URL handling
+   - [x] Middleware tests for various request scenarios and security edge cases
+   - [x] Integration tests with server lifecycle and other middleware
+   - [x] Security tests for origin validation, preflight handling, and wildcard warnings
+   - [x] Request correlation tests ensuring proper ID propagation
 
-9. **Documentation and Code Quality**:
-   - [x] Complete Go doc comments for all public functions and types
-   - [x] Usage examples for both simple and advanced configuration
-   - [x] Security considerations and best practices documented
-   - [x] Performance optimization notes included
+9. **Production-Ready Documentation and Code Quality**:
+   - [x] Complete Go doc comments for all public CORS functions and types
+   - [x] Security warnings documented in code comments and validation
+   - [x] Usage examples for both simple and advanced CORS configuration
+   - [x] Environment variable examples with production security guidance
    - [x] Code passes formatting (`go fmt`) and static analysis (`go vet`)
-   - [x] High test coverage maintained (>95%)
+   - [x] High test coverage maintained (>95%) with enhanced security testing
 
-### 🚀 **Request Logging Middleware Complete**
+### 🚀 **CORS Handling Middleware Complete**
 
-This implementation provides production-ready request logging with:
-- ✅ **Step 2.1.2.2**: Request logging middleware (COMPLETE)
-- 📋 **Step 2.1.2.3**: CORS handling middleware (NEXT)
-- 📋 **Step 2.1.2.4**: Error response formatting middleware (FUTURE)
+This implementation provides production-ready CORS handling with:
+- ✅ **Step 2.1.2.3**: CORS handling middleware (COMPLETE)
+- 📋 **Step 2.1.2.4**: Error response formatting middleware (NEXT)
+- 📋 **Step 2.1.2.5**: Security headers middleware (FUTURE)
 
 **Ready for Next Steps**:
-- **Step 2.1.2.3**: Implement CORS handling middleware with environment-configurable origins
-- **Step 2.1.2.4**: Error response formatting middleware with request correlation
+- **Step 2.1.2.4**: Implement error response formatting middleware with request correlation
 - **Step 2.1.2.5**: Security headers middleware with conditional HSTS
-- **Task 2.1.3**: Health check system leveraging middleware infrastructure and request correlation
+- **Step 2.1.2.6**: Comprehensive middleware tests and integration validation
+- **Task 2.1.3**: Health check system leveraging middleware infrastructure
 
 ### 📁 **Files Created/Modified**
-- `internal/server/request_logging.go` - Complete request logging middleware implementation
-- `internal/server/request_logging_test.go` - Comprehensive request logging testing
-- `internal/server/server_test.go` - Added request logging integration tests
+- `internal/config/env.go` - Added CORS environment variable constants
+- `internal/server/cors.go` - Complete CORS middleware implementation
+- `internal/server/cors_test.go` - Comprehensive CORS testing
+- `internal/server/server_test.go` - Added CORS integration tests
 
 ---
 
 ## Architecture Benefits Achieved
 
-### 🔍 **Comprehensive Request Correlation**
-- **Secure Request IDs**: Cryptographically secure correlation tokens using configurable byte length
-- **Context Propagation**: Type-safe request ID propagation through entire request lifecycle
-- **Header Integration**: Client-accessible request IDs via `X-Request-ID` response header
-- **Middleware Chain Support**: Request IDs available to all subsequent middleware and handlers
-- **High-Concurrency Safety**: Tested request ID uniqueness under concurrent load
+### 🌐 **Advanced Environment-Configurable CORS**
+- **Comprehensive Configuration**: Full CORS policy control via environment variables (origins, methods, headers, max-age)
+- **Secure Defaults**: No CORS headers unless origins explicitly configured with validation
+- **Dynamic Configuration**: Runtime CORS policy changes via environment variables with validation
+- **Conditional Application**: CORS middleware only applied when origins are configured and validated
+- **Production Guidance**: Built-in security warnings for dangerous configurations
 
-### 📊 **Production-Ready Logging**
-- **Structured Logging**: JSON format with `log/slog` and consistent field naming
-- **Configurable Logging**: Environment-driven configuration with enable/disable support
-- **Performance Metrics**: Request duration, status codes, and response byte tracking
-- **Security Conscious**: Sensitive header filtering and no sensitive data logging
-- **Container Integration**: JSON logging suitable for aggregation in container orchestration
-- **Log Level Optimization**: Performance-optimized logging with level checking
+### 🔒 **Enhanced Security-First CORS Implementation**
+- **Case-Insensitive Matching**: RFC-compliant origin matching with scheme/host normalization
+- **Configuration Validation**: URL validation preventing malformed origin configurations
+- **Wildcard Security Warnings**: Explicit warnings against wildcard usage in production
+- **Preflight Validation**: Comprehensive OPTIONS request handling with security logging
+- **Explicit Configuration**: No permissive defaults, security conscious by design with validation
+- **Security Event Logging**: Enhanced logging for security monitoring and threat detection
 
-### 🔧 **Flexible Configuration Architecture**
-- **Environment Integration**: Full environment variable support following established patterns
-- **Multiple Middleware Functions**: Both simple and advanced configuration options
-- **Header Filtering**: Configurable sensitive header exclusion for security
-- **Debugging Support**: Optional header inclusion for development environments
-- **Default Management**: Secure defaults with easy customization
+### 🔗 **Production-Ready Middleware Integration**
+- **Configuration Helper Integration**: Uses established `config.GetEnv*()` helper functions
+- **Conditional Deployment**: Enhanced `UseIf()` pattern for environment-specific middleware
+- **Request Correlation**: Leverages existing request logging for comprehensive CORS event correlation
+- **Method Chaining**: Supports fluent API design for clean configuration
+- **Error Handling**: Graceful degradation with configuration validation failures
+- **Performance Optimization**: Efficient implementation with URL normalization caching
 
-### 🛡️ **Enhanced Security Features**
-- **Sensitive Data Protection**: Comprehensive header filtering preventing token leakage
-- **Error Prefix Consistency**: Structured error handling with consistent prefixes
-- **Type-Safe Context**: Typed context keys preventing value collision attacks
-- **Configuration Validation**: Safe environment variable parsing and validation
-- **Security Constants**: Centralized sensitive header definitions
+### 📊 **Comprehensive Monitoring & Observability**
+- **Enhanced CORS Logging**: Detailed CORS events with consistent field naming and security context
+- **Request Correlation**: All CORS events include request IDs for distributed tracing and security analysis
+- **Security Monitoring**: Origin validation, preflight handling, and security warnings logged for analysis
+- **Audit Trail**: Complete audit trail for CORS configuration changes and security events
+- **Performance Tracking**: CORS processing integrated with existing performance metrics
 
-### 🧪 **Comprehensive Testing Coverage**
-- **Unit Testing**: Complete coverage including configuration, filtering, and edge cases
-- **Integration Testing**: Server integration with custom configuration testing
-- **Security Testing**: Verification of sensitive data filtering and safe logging practices
-- **Performance Testing**: High-concurrency request ID generation validation
-- **Edge Case Testing**: Malformed requests, long URLs, and various header scenarios
+### 🧪 **Extensive Testing Coverage**
+- **Configuration Testing**: Comprehensive environment variable loading and validation testing
+- **Security Testing**: Origin validation, preflight handling, attack prevention, and wildcard warnings
+- **Case-Insensitive Testing**: Thorough testing of URL normalization and case handling
+- **Integration Testing**: Server lifecycle and middleware chain interaction with enhanced scenarios
+- **Edge Case Testing**: Malformed requests, invalid configurations, and various security scenarios
 
-### ⚡ **Performance & Maintainability**
-- **Efficient Implementation**: Minimal overhead with crypto/rand and response wrapping
-- **Named Constants**: Maintainable magic number elimination
-- **Consistent Field Names**: Centralized log field definitions
-- **Log Level Optimization**: Conditional expensive operations based on log levels
-- **Memory Efficiency**: Efficient header filtering and string operations
+### 🏗️ **Advanced Architecture Patterns**
+- **Configuration Validation**: Proactive validation with detailed error messages and security guidance
+- **URL Normalization**: RFC-compliant case-insensitive origin matching with performance optimization
+- **Security-First Design**: Built-in security warnings and guidance for production deployments
+- **Helper Function Integration**: Consistent use of established configuration helper patterns
+- **Error Handling**: Comprehensive error handling with structured error reporting
 
-This implementation establishes comprehensive request correlation and structured logging that will enhance debugging, monitoring, and operational visibility throughout the Cipher Hub system! 🚀
+This implementation establishes production-ready CORS handling with advanced security features, comprehensive validation, and enhanced observability that integrates seamlessly with the existing middleware infrastructure! 🚀
 
 ---
 
 ## Next Phase Preview
 
-**Step 2.1.2.3** will build on this logging foundation:
-- **CORS Middleware**: Environment-configurable origins using `UseIf()` pattern
-- **Request Correlation**: Leverage established request ID propagation for CORS logging
-- **Security Integration**: Build on structured logging for CORS security events
-- **Testing Patterns**: Follow established middleware testing patterns for CORS functionality
+**Step 2.1.2.4** will build on this CORS foundation:
+- **Error Response Formatting**: Standardized JSON error responses with request correlation
+- **HTTP Status Integration**: Proper error code mapping and client-friendly messages
+- **Security Integration**: Build on CORS and request logging for comprehensive error tracking
+- **Testing Patterns**: Follow established CORS testing patterns for error middleware functionality
