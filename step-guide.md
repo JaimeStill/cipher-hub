@@ -1,13 +1,13 @@
 # Step 2.1.2.2: Implement Request Logging Middleware
 
 ## Overview
-
-**Step**: 2.1.2.2  
-**Task**: 2.1.2 (Middleware Infrastructure)  
-**Target**: 2.1 (Basic Server Setup)  
+ 
 **Phase**: 2 (HTTP Server Infrastructure)  
+**Target**: 2.1 (Basic Server Setup)  
+**Task**: 2.1.2 (Middleware Infrastructure)  
+**Step**: 2.1.2.2  
 
-**Time Estimate**: 20-25 minutes  
+**Time Estimate**: 1 hour  
 **Scope**: Implement structured request logging middleware with correlation IDs and performance metrics
 
 ## Step Objectives
