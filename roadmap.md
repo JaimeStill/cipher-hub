@@ -27,6 +27,8 @@
 
 ## Roadblocks
 
+- **Separation of Concerns Architecture Review**: Analysis required before next development session to identify and address domain logic mixed with transport concerns across packages. Error infrastructure refactoring revealed pattern of business logic inappropriately placed in HTTP layer that may exist elsewhere in codebase.
+
 ---
 
 ## Phase 1: Foundation Architecture

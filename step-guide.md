@@ -1,32 +1,32 @@
-# Step 2.1.2.3: Implement CORS Handling Middleware
+# Step 2.1.2.4: Create Error Response Formatting Middleware
 
 ## Overview
 
 **Phase**: 2 (HTTP Server Infrastructure)  
 **Target**: 2.1 (Basic Server Setup)  
 **Task**: 2.1.2 (Middleware Infrastructure)  
-**Step**: 2.1.2.3 (Add CORS handling middleware)
+**Step**: 2.1.2.4 (Create error response formatting middleware)
 
 **Time Estimate**: 1 hour  
-**Scope**: Implement environment-configurable CORS handling middleware with preflight support
+**Scope**: Implement standardized JSON error response formatting with request correlation and security-conscious error handling
 
 ## Step Objectives
 
 ### Primary Deliverables
-- **CORS Configuration Structure**: Environment-driven CORS configuration with secure defaults
-- **CORS Middleware Implementation**: Handle CORS headers and preflight OPTIONS requests
-- **Environment Integration**: Add CORS variables to centralized configuration management
-- **Request Correlation**: Integrate CORS events with existing request logging and correlation IDs
-- **Server Integration**: Use conditional middleware application with `UseIf()` pattern
+- **Error Response Format**: Standardized JSON error response structure with consistent field naming
+- **Error Classification System**: Map internal errors to appropriate HTTP status codes and public error messages
+- **Security-Conscious Error Handling**: Prevent sensitive information leakage while providing useful error context
+- **Request Correlation Integration**: Include request IDs in error responses for tracing and debugging
+- **Error Recovery Middleware**: Panic recovery with structured error responses
 - **Comprehensive Testing**: Unit and integration tests following established patterns
 
 ### Implementation Requirements
-- **Files Created**: CORS configuration in `internal/config/env.go`, CORS middleware implementation
-- **Files Modified**: `internal/server/server.go` (add CORS integration example), tests for CORS middleware
-- **Architecture Focus**: Environment-configurable CORS with secure defaults and preflight handling
-- **Security Focus**: Restrictive CORS policy by default, explicit origin configuration required
-- **Go Best Practices**: Follow established middleware patterns and configuration loading
-- **Foundation Usage**: Leverage request logging correlation IDs and middleware infrastructure
+- **Files Created**: Error response middleware implementation and tests
+- **Files Modified**: Add error response utilities and server integration examples
+- **Architecture Focus**: Security-first error handling with request correlation and standardized responses
+- **Security Focus**: Never expose internal implementation details or sensitive information
+- **Go Best Practices**: Follow established middleware patterns and error handling conventions
+- **Foundation Usage**: Leverage request correlation IDs and structured logging infrastructure
 
 ---
 
@@ -34,98 +34,97 @@
 
 ### Technical Specifications
 
-#### CORS Configuration Requirements
-- **Environment Variables**: Use centralized configuration with `CIPHER_HUB_CORS_*` pattern
-- **Secure Defaults**: Empty origins list means no CORS headers (secure by default)
-- **Conditional Application**: Use `UseIf()` pattern to apply CORS only when origins are configured
-- **Request Correlation**: Log CORS events with existing request ID correlation system
+#### Error Response Structure Requirements
+- **Standard JSON Format**: Consistent error response schema across all endpoints
+- **Request Correlation**: Include request ID from existing request logging middleware
+- **Timestamp Information**: ISO 8601 formatted timestamps for error occurrence
+- **Error Classification**: Public error codes and categories separate from internal errors
+- **Security Compliance**: No sensitive data or implementation details in responses
 
-#### CORS Headers Requirements
-- **Basic CORS Headers**: `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`
-- **Preflight Support**: Handle OPTIONS requests with appropriate response headers
-- **Configurable Origins**: Support comma-separated list of allowed origins from environment
-- **Standard Methods**: Support `GET, POST, PUT, DELETE, OPTIONS` by default
+#### Error Classification Requirements
+- **HTTP Status Mapping**: Map internal errors to appropriate HTTP status codes
+- **Public Error Codes**: Application-specific error codes safe for external consumption
+- **Error Categories**: Group errors by type (validation, authentication, internal, etc.)
+- **Message Sanitization**: Safe, user-friendly error messages without internal details
 
-#### Logging Requirements
-- **Request Correlation**: Use existing `GetRequestID(r.Context())` for CORS event correlation
-- **Structured Logging**: Use `slog.Info()` with consistent field naming patterns
-- **CORS Events**: Log preflight requests and origin validation with security context
+#### Security Requirements
+- **Information Disclosure Prevention**: Never expose internal error details or stack traces
+- **Error Logging**: Log full internal errors while returning sanitized responses
+- **Panic Recovery**: Gracefully handle panics with structured error responses
+- **Input Validation**: Validate and sanitize any user input included in error responses
 
 ---
 
 ## Completion Criteria
 
-### **Step 2.1.2.3 is complete when:**
+### **Step 2.1.2.4 is complete when:**
 
-1. **Enhanced CORS Environment Variables**:
-   - `EnvCORSEnabled`, `EnvCORSOrigins`, `EnvCORSMethods`, `EnvCORSHeaders`, `EnvCORSMaxAge` constants added to `internal/config/env.go`
-   - Environment variables follow established naming convention: `CIPHER_HUB_CORS_*`
-   - Integration with existing centralized configuration management using helper functions
+1. **Core Error Classification in Models Package**:
+   - `ErrorCode` type and constants in `internal/models/errors.go`
+   - `ErrorCategory` type for consistent error grouping
+   - `ClassifyError()` function to map internal errors to public error codes
+   - `SanitizeErrorMessage()` function for security-conscious error messages
+   - Framework-agnostic error utilities reusable across packages
 
-2. **Advanced CORS Configuration Structure**:
-   - `CORSConfig` struct with `Enabled`, `Origins`, `Methods`, `Headers`, `MaxAge`, `Credentials` fields
-   - `LoadFromEnv()` method using established configuration helper functions
-   - `ApplyDefaults()` method with secure default values
-   - `Validate()` method with comprehensive URL validation and security warnings
-   - `IsOriginAllowed()` method with case-insensitive origin matching
+2. **HTTP Error Response Structure in Server Package**:
+   - `ErrorResponse` struct with fields: `Error`, `Message`, `RequestID`, `Timestamp`, optional `Details`
+   - `ErrorDetail` struct for structured error information with code and category
+   - JSON tags following established naming conventions
+   - HTTP status code mapping based on error classifications
 
-3. **Security-Enhanced CORS Middleware Implementation**:
-   - `CORSMiddleware()` function with configuration validation and error handling
-   - `CORSMiddlewareWithConfig()` function for custom configuration
-   - Preflight OPTIONS request handling with appropriate status codes
-   - CORS header application based on validated origin matching
-   - Security warnings for wildcard origin usage
-   - Enhanced logging for security monitoring and audit trails
+3. **Error Response Formatting Middleware**:
+   - `ErrorResponseMiddleware()` function with default configuration
+   - `ErrorResponseMiddlewareWithConfig()` for custom error handling configuration
+   - Panic recovery with structured error responses
+   - Integration with request logging for error correlation
+   - Uses core error classification from models package
 
-4. **Case-Insensitive Origin Matching**:
-   - `normalizeOrigin()` function for RFC-compliant URL normalization
-   - Lowercase scheme and host matching while preserving path case
-   - Comprehensive test coverage for various case scenarios
-   - Security-conscious exact matching preventing subdomain attacks
+4. **Security-Conscious Error Handling**:
+   - Internal error logging with full details using request correlation
+   - External error responses with sanitized, user-safe messages from models package
+   - Prevention of sensitive information leakage (no stack traces, internal paths, etc.)
+   - Configurable error detail levels for different environments
 
-5. **Enhanced Request Correlation Integration**:
-   - CORS events logged with request correlation IDs using `GetRequestID()`
-   - Structured logging with CORS-specific field names and security context
-   - Preflight request logging with detailed security information
-   - Security event logging for rejected requests with correlation
-   - Integration with existing request logging middleware
+5. **HTTP Status Code Mapping in Server Package**:
+   - Map error classifications to appropriate HTTP status codes
+   - Support for custom status code mapping
+   - Integration with core error classification from models
 
-6. **Comprehensive Security Features**:
-   - Secure defaults (no CORS headers unless origins explicitly configured)
-   - Configuration validation preventing malformed origin URLs
-   - Security warnings for wildcard origins with production recommendations
-   - Preflight request validation with forbidden responses for disallowed origins
-   - Enhanced logging for security monitoring and threat detection
+6. **Request Correlation Integration**:
+   - Use `GetRequestID()` from existing request logging infrastructure
+   - Include request ID in all error responses for tracing
+   - Log errors with request correlation for debugging
+   - Maintain request context throughout error handling
 
-7. **Advanced Server Integration**:
-   - Conditional middleware application using `UseIf()` pattern
-   - Integration with existing middleware stack and request logging
-   - Configuration validation during middleware setup
-   - Method chaining support for fluent configuration
-   - Thread safety and performance standards maintained
+7. **Middleware Integration**:
+   - Position middleware to catch errors from handlers and other middleware
+   - Integration with existing middleware stack patterns
+   - Support for method chaining with other middleware
+   - Proper error recovery and response completion
 
-8. **Enhanced Testing Coverage**:
-   - Unit tests for enhanced CORS configuration loading and validation
-   - Case-insensitive origin matching tests with comprehensive scenarios
-   - Configuration validation tests including malformed URL handling
-   - Middleware tests for various request scenarios and security edge cases
+8. **Comprehensive Testing Coverage**:
+   - Unit tests for core error classification in models package
+   - Unit tests for HTTP error response structures and middleware in server package
+   - Error mapping tests for different error types and status codes
+   - Middleware tests for panic recovery and error formatting
    - Integration tests with server lifecycle and other middleware
-   - Security tests for origin validation, preflight handling, and wildcard warnings
-   - Request correlation tests ensuring proper ID propagation
+   - Security tests ensuring no information leakage
+   - Request correlation tests with error scenarios
 
-9. **Production-Ready Documentation and Code Quality**:
-   - Complete Go doc comments for all public CORS functions and types
-   - Security warnings documented in code comments and validation
-   - Usage examples for both simple and advanced CORS configuration
-   - Environment variable examples with production security guidance
+9. **Production-Ready Code Quality**:
+   - Complete Go doc comments for all public error handling functions in both packages
+   - Security considerations documented in code comments
+   - Usage examples for common error handling scenarios
+   - Environment considerations for error detail levels
    - Code passes formatting (`go fmt`) and static analysis (`go vet`)
-   - High test coverage maintained (>95%) with enhanced security testing
+   - Maintains high test coverage (>95%) with security-focused testing
 
 ### **Files Created/Modified**
-- `internal/config/env.go` - Added CORS environment variable constants
-- `internal/server/cors.go` - Complete CORS middleware implementation
-- `internal/server/cors_test.go` - Comprehensive CORS testing
-- `internal/server/server_test.go` - Added CORS integration tests
+- `internal/models/errors.go` - Add core error classification and sanitization
+- `internal/server/error_response.go` - HTTP error response middleware and utilities
+- `internal/server/error_response_test.go` - Comprehensive error response testing
+- `internal/models/errors_test.go` - Core error classification testing
+- `internal/server/server_test.go` - Add error response integration tests
 
 ---
 
@@ -133,113 +132,114 @@
 
 ### Unit Testing Requirements
 
-#### CORS Configuration Testing
-- Test `LoadFromEnv()` with various environment variable combinations
-- Test `ApplyDefaults()` with secure default behavior validation
-- Test `IsOriginAllowed()` with exact matching and security edge cases
-- Test environment variable parsing with malformed input handling
+#### Error Response Structure Testing
+- Test `ErrorResponse` JSON serialization with all fields
+- Test error response creation with different error types
+- Test timestamp formatting and request ID inclusion
+- Test error detail structure and optional fields
 
-#### CORS Middleware Testing
-- Test middleware with enabled/disabled configuration
-- Test origin validation with allowed and disallowed origins
-- Test preflight OPTIONS request handling with proper status codes
-- Test CORS header application for various request types
-- Test wildcard origin handling (if supported)
+#### Error Classification Testing
+- Test internal error mapping to public error codes
+- Test HTTP status code mapping for different error types
+- Test error message sanitization and security compliance
+- Test error category assignment and consistency
 
-#### Edge Case Testing
-- Test requests without Origin header
-- Test requests with empty or malformed Origin headers
-- Test case sensitivity in origin matching
-- Test middleware behavior with empty origins configuration
+#### Error Middleware Testing
+- Test middleware with various error types from handlers
+- Test panic recovery with structured error responses
+- Test request correlation integration in error scenarios
+- Test middleware chain integration and error propagation
 
 ### Integration Testing Requirements
 
 #### Server Integration Testing
-- Test CORS middleware integration with server lifecycle
-- Test conditional middleware application using `UseIf()` pattern
-- Test middleware chain execution with request logging + CORS
-- Test CORS with various handler types and response scenarios
+- Test error middleware integration with server lifecycle
+- Test error handling with other middleware in the stack
+- Test end-to-end error responses through complete request cycle
+- Test error logging correlation with request logging middleware
 
-#### Request Correlation Testing
-- Test CORS events are logged with request correlation IDs
-- Test request ID propagation through CORS middleware
-- Test structured logging output includes CORS-specific fields
-- Test preflight request logging with correlation
+#### Security Testing Requirements
+- Test that sensitive information never appears in error responses
+- Test error message sanitization prevents information disclosure
+- Test panic recovery doesn't expose internal implementation details
+- Test error responses under various attack scenarios
 
-### Security Testing Requirements
-- Test CORS policy enforcement prevents unauthorized cross-origin requests
-- Test preflight request handling rejects disallowed origins
-- Test exact origin matching prevents subdomain attacks
-- Test secure defaults prevent accidental permissive configuration
+### Edge Case Testing Requirements
+- Test error handling with malformed requests
+- Test concurrent error scenarios
+- Test memory exhaustion and resource limit errors
+- Test error handling when logging systems fail
 
 ---
 
 ## Security Considerations
 
-### CORS Security Patterns
+### Error Information Disclosure Prevention
 ```go
-// Correct: Restrictive CORS policy by default
-config := CORSConfig{
-    Origins: []string{"https://app.example.com"}, // Specific origins only
-}
-
-// Incorrect: Overly permissive CORS policy
-config := CORSConfig{
-    Origins: []string{"*"}, // Allows all origins - security risk
-}
-```
-
-### Origin Validation Security
-```go
-// Correct: Exact origin matching
-func (c *CORSConfig) IsOriginAllowed(origin string) bool {
-    for _, allowedOrigin := range c.Origins {
-        if allowedOrigin == origin { // Exact match required
-            return true
-        }
-    }
-    return false
-}
-
-// Incorrect: Substring matching (vulnerable to subdomain attacks)
-if strings.Contains(allowedOrigin, origin) { // NEVER do this
-    return true
-}
-```
-
-### Preflight Request Handling Security
-```go
-// Correct: Secure preflight handling with origin validation
-if r.Method == "OPTIONS" {
-    if originAllowed {
-        w.WriteHeader(http.StatusOK)
-    } else {
-        w.WriteHeader(http.StatusForbidden) // Reject disallowed origins
-    }
-    return
-}
-
-// Incorrect: Always allowing preflight requests
-if r.Method == "OPTIONS" {
-    w.WriteHeader(http.StatusOK) // Security risk - no origin validation
-    return
-}
-```
-
-### Environment Configuration Security
-```go
-// Correct: Secure defaults with explicit configuration required
-func (c *CORSConfig) ApplyDefaults() {
-    // Secure default: disabled unless explicitly configured
-    if !c.Enabled && len(c.Origins) == 0 {
-        c.Enabled = false // No CORS headers by default
+// Correct: Sanitized error response
+func sanitizeError(err error) string {
+    switch {
+    case errors.Is(err, models.ErrInvalidID):
+        return "Invalid identifier provided"
+    case errors.Is(err, models.ErrInvalidName):
+        return "Invalid name provided"
+    default:
+        return "An internal error occurred" // Never expose internal details
     }
 }
 
-// Incorrect: Permissive defaults
-func (c *CORSConfig) ApplyDefaults() {
-    c.Enabled = true                    // Dangerous default
-    c.Origins = []string{"*"}           // Allows all origins
+// Incorrect: Exposing internal details
+func exposeInternalError(err error) string {
+    return err.Error() // Could expose internal paths, database details, etc.
+}
+```
+
+### Panic Recovery Security
+```go
+// Correct: Secure panic recovery
+func recoverPanic() interface{} {
+    if r := recover(); r != nil {
+        // Log full panic details internally
+        slog.Error("Panic recovered", "panic", r, "stack", debug.Stack())
+        // Return generic error to client
+        return "Internal server error"
+    }
+    return nil
+}
+
+// Incorrect: Exposing panic details
+func unsafeRecover() interface{} {
+    if r := recover(); r != nil {
+        return fmt.Sprintf("Panic: %v", r) // Exposes internal state
+    }
+    return nil
+}
+```
+
+### Error Logging vs Response Security
+```go
+// Correct: Detailed internal logging, sanitized external response
+func handleError(err error, requestID string) {
+    // Log full error details with correlation
+    slog.Error("Handler error occurred",
+        LogFieldRequestID, requestID,
+        "error", err,
+        "error_type", fmt.Sprintf("%T", err))
+    
+    // Return sanitized response
+    response := ErrorResponse{
+        Error:     mapToPublicError(err),
+        Message:   sanitizeErrorMessage(err),
+        RequestID: requestID,
+        Timestamp: time.Now().UTC(),
+    }
+}
+
+// Incorrect: Same level of detail in logs and responses
+func unsafeErrorHandling(err error) {
+    message := err.Error() // Same message for both log and response
+    log.Printf("Error: %s", message)
+    // Send same detailed message to client - security risk
 }
 ```
 
@@ -247,978 +247,1022 @@ func (c *CORSConfig) ApplyDefaults() {
 
 ## Implementation
 
-### Step 1: Add CORS Environment Variables to Configuration
+### Step 1: Extend Core Error Functionality in Models Package
 
-**File**: `internal/config/env.go` (modify existing file)
+**File**: `internal/models/errors.go` (modify existing file)
 
-Add CORS environment variables to the existing constants in the security configuration section:
+Add core error classification and sanitization functionality to the existing errors file:
 
 ```go
-// Update the existing security configuration section
-const (
-    // ... existing server and logging constants ...
+package models
 
-    // Security configuration (existing section - add new CORS variables here)
-    EnvCORSEnabled = "CIPHER_HUB_CORS_ENABLED"    // Add this line
-    EnvCORSOrigins = "CIPHER_HUB_CORS_ORIGINS"    // Already exists - don't duplicate
-    EnvCORSMethods = "CIPHER_HUB_CORS_METHODS"    // Add this line
-    EnvCORSHeaders = "CIPHER_HUB_CORS_HEADERS"    // Add this line  
-    EnvCORSMaxAge  = "CIPHER_HUB_CORS_MAX_AGE"    // Add this line
-    EnvTLSCertFile = "CIPHER_HUB_TLS_CERT_FILE"   // Existing
-    EnvTLSKeyFile  = "CIPHER_HUB_TLS_KEY_FILE"    // Existing
+import "errors"
 
-    // ... rest of existing constants ...
+// Existing error variables
+var (
+	ErrInvalidID                = errors.New("invalid ID")
+	ErrInvalidName              = errors.New("invalid name")
+	ErrInvalidServiceID         = errors.New("invalid service ID")
+	ErrInvalidParticipantStatus = errors.New("invalid participant status")
+	ErrInvalidAlgorithm         = errors.New("invalid algorithm")
+	ErrInvalidKeyStatus         = errors.New("invalid key status")
+	ErrInvalidVersion           = errors.New("invalid version")
 )
+
+// Public error codes safe for external consumption
+type ErrorCode string
+
+const (
+	ErrorCodeValidation     ErrorCode = "VALIDATION_ERROR"
+	ErrorCodeAuthentication ErrorCode = "AUTHENTICATION_ERROR"
+	ErrorCodeAuthorization  ErrorCode = "AUTHORIZATION_ERROR"
+	ErrorCodeNotFound       ErrorCode = "NOT_FOUND"
+	ErrorCodeInternal       ErrorCode = "INTERNAL_ERROR"
+	ErrorCodeBadRequest     ErrorCode = "BAD_REQUEST"
+)
+
+// ErrorCategory represents error groupings for classification
+type ErrorCategory string
+
+const (
+	ErrorCategoryValidation ErrorCategory = "validation"
+	ErrorCategoryAuth       ErrorCategory = "authentication"
+	ErrorCategoryNotFound   ErrorCategory = "not_found"
+	ErrorCategoryInternal   ErrorCategory = "internal"
+)
+
+// ErrorClassification holds the public representation of an error
+type ErrorClassification struct {
+	Code     ErrorCode     `json:"code"`
+	Category ErrorCategory `json:"category"`
+}
+
+// ClassifyError maps internal errors to public error classifications
+// This function is framework-agnostic and can be used across packages
+func ClassifyError(err error) ErrorClassification {
+	switch {
+	case err == ErrInvalidID:
+		return ErrorClassification{Code: ErrorCodeValidation, Category: ErrorCategoryValidation}
+	case err == ErrInvalidName:
+		return ErrorClassification{Code: ErrorCodeValidation, Category: ErrorCategoryValidation}
+	case err == ErrInvalidServiceID:
+		return ErrorClassification{Code: ErrorCodeValidation, Category: ErrorCategoryValidation}
+	case err == ErrInvalidParticipantStatus:
+		return ErrorClassification{Code: ErrorCodeValidation, Category: ErrorCategoryValidation}
+	case err == ErrInvalidAlgorithm:
+		return ErrorClassification{Code: ErrorCodeValidation, Category: ErrorCategoryValidation}
+	case err == ErrInvalidKeyStatus:
+		return ErrorClassification{Code: ErrorCodeValidation, Category: ErrorCategoryValidation}
+	case err == ErrInvalidVersion:
+		return ErrorClassification{Code: ErrorCodeValidation, Category: ErrorCategoryValidation}
+	default:
+		return ErrorClassification{Code: ErrorCodeInternal, Category: ErrorCategoryInternal}
+	}
+}
+
+// SanitizeErrorMessage provides user-safe error messages without internal details
+// This prevents sensitive information leakage in external responses
+func SanitizeErrorMessage(err error) string {
+	switch {
+	case err == ErrInvalidID:
+		return "Invalid identifier provided"
+	case err == ErrInvalidName:
+		return "Invalid name provided"
+	case err == ErrInvalidServiceID:
+		return "Invalid service identifier provided"
+	case err == ErrInvalidParticipantStatus:
+		return "Invalid participant status provided"
+	case err == ErrInvalidAlgorithm:
+		return "Invalid algorithm specified"
+	case err == ErrInvalidKeyStatus:
+		return "Invalid key status provided"
+	case err == ErrInvalidVersion:
+		return "Invalid version number provided"
+	default:
+		return "An internal error occurred"
+	}
+}
+
+// IsValidationError checks if an error is a validation error
+func IsValidationError(err error) bool {
+	classification := ClassifyError(err)
+	return classification.Category == ErrorCategoryValidation
+}
+
+// IsInternalError checks if an error should be treated as an internal error
+func IsInternalError(err error) bool {
+	classification := ClassifyError(err)
+	return classification.Category == ErrorCategoryInternal
+}
 ```
 
-### Step 2: Create CORS Configuration Structure
+### Step 2: Create Core Error Tests
 
-**File**: `internal/server/cors.go` (new file)
+**File**: `internal/models/errors_test.go` (modify existing file or create if needed)
+
+Add tests for the new error classification functionality:
 
 ```go
-package server
+package models
 
 import (
 	"fmt"
-	"log/slog"
-	"net/http"
-	"net/url"
-	"strings"
-
-	"cipher-hub/internal/config"
-)
-
-// CORS configuration constants
-const (
-	// CORS error handling
-	CORSErrorPrefix = "CORS"
-
-	// CORS log field names for consistency
-	LogFieldCORSOrigin     = "cors_origin"
-	LogFieldCORSMethod     = "cors_method"
-	LogFieldCORSPreflight  = "cors_preflight"
-	LogFieldCORSAllowed    = "cors_allowed"
-
-	// Default CORS configuration
-	DefaultCORSMethods = "GET, POST, PUT, DELETE, OPTIONS"
-	DefaultCORSHeaders = "Content-Type, Authorization, X-Request-ID"
-	DefaultCORSMaxAge  = "86400" // 24 hours
-)
-
-// CORSConfig holds configuration for CORS middleware
-type CORSConfig struct {
-	Enabled     bool     `json:"enabled"`
-	Origins     []string `json:"origins"`
-	Methods     string   `json:"methods"`
-	Headers     string   `json:"headers"`
-	MaxAge      string   `json:"max_age"`
-	Credentials bool     `json:"credentials"`
-}
-
-// LoadFromEnv populates CORS configuration from environment variables using established helper functions
-func (c *CORSConfig) LoadFromEnv() {
-	// Use established configuration helpers
-	c.Enabled = config.GetEnvBool(config.EnvCORSEnabled, c.Enabled)
-	c.Origins = config.GetEnvStringSlice(config.EnvCORSOrigins, ",", c.Origins)
-	c.Methods = config.GetEnvString(config.EnvCORSMethods, c.Methods)
-	c.Headers = config.GetEnvString(config.EnvCORSHeaders, c.Headers)
-	c.MaxAge = config.GetEnvString(config.EnvCORSMaxAge, c.MaxAge)
-}
-
-// ApplyDefaults sets secure default values for CORS configuration
-func (c *CORSConfig) ApplyDefaults() {
-	// Secure default: disabled unless explicitly configured
-	if !c.Enabled && len(c.Origins) == 0 {
-		c.Enabled = false
-	}
-
-	// Enable CORS if origins are configured
-	if len(c.Origins) > 0 {
-		c.Enabled = true
-	}
-
-	// Set default methods, headers, and max age
-	if c.Methods == "" {
-		c.Methods = DefaultCORSMethods
-	}
-	if c.Headers == "" {
-		c.Headers = DefaultCORSHeaders
-	}
-	if c.MaxAge == "" {
-		c.MaxAge = DefaultCORSMaxAge
-	}
-}
-
-// Validate performs comprehensive validation of CORS configuration
-func (c *CORSConfig) Validate() error {
-	for _, origin := range c.Origins {
-		if origin == "*" {
-			// Allow wildcard but warn about security implications
-			slog.Warn("CORS wildcard origin configured - major security risk in production",
-				"origin", "*",
-				"recommendation", "use specific origins in production")
-			continue
-		}
-		
-		// Validate origin URL format
-		if _, err := url.Parse(origin); err != nil {
-			return fmt.Errorf("%s: invalid origin URL %q: %w", 
-				CORSErrorPrefix, origin, err)
-		}
-	}
-	return nil
-}
-
-// normalizeOrigin converts origin to lowercase scheme and host (RFC compliant)
-func normalizeOrigin(origin string) string {
-	if u, err := url.Parse(origin); err == nil {
-		u.Scheme = strings.ToLower(u.Scheme)
-		u.Host = strings.ToLower(u.Host)
-		return u.String()
-	}
-	// Fallback for malformed URLs
-	return strings.ToLower(origin)
-}
-
-// IsOriginAllowed checks if the given origin is in the allowed origins list.
-// Performs case-insensitive matching for URL schemes and hostnames following RFC standards.
-//
-// Security Warning: Using "*" as an origin allows ALL origins and is a major security risk.
-// Only use "*" in development environments, never in production.
-func (c *CORSConfig) IsOriginAllowed(origin string) bool {
-	if len(c.Origins) == 0 {
-		return false // No origins configured = no CORS
-	}
-
-	normalizedOrigin := normalizeOrigin(origin)
-
-	for _, allowedOrigin := range c.Origins {
-		if allowedOrigin == "*" {
-			// Log security warning for wildcard usage
-			slog.Warn("CORS wildcard origin matched - security risk in production",
-				"wildcard_origin", "*",
-				"actual_origin", origin,
-				"recommendation", "use specific origins in production")
-			return true
-		}
-		
-		if normalizeOrigin(allowedOrigin) == normalizedOrigin {
-			return true
-		}
-	}
-	return false
-}
-```
-
-### Step 3: Implement CORS Middleware
-
-**Continue in**: `internal/server/cors.go`
-
-```go
-// CORSMiddleware creates middleware that handles CORS (Cross-Origin Resource Sharing) requests.
-// Uses default configuration with environment variable loading.
-//
-// Returns:
-//   - Middleware: Configured CORS middleware function
-func CORSMiddleware() Middleware {
-	config := CORSConfig{}
-	config.ApplyDefaults()
-	config.LoadFromEnv()
-	
-	// Validate configuration and log any issues
-	if err := config.Validate(); err != nil {
-		slog.Error("CORS configuration validation failed", "error", err)
-		// Return pass-through middleware on validation failure
-		return func(next http.Handler) http.Handler { return next }
-	}
-	
-	return CORSMiddlewareWithConfig(config)
-}
-
-// CORSMiddlewareWithConfig creates middleware with custom CORS configuration.
-// Handles CORS headers for cross-origin requests and processes preflight OPTIONS requests.
-//
-// Features:
-//   - Environment-configurable allowed origins with secure defaults
-//   - Case-insensitive origin matching following RFC standards
-//   - Preflight OPTIONS request handling with proper response headers
-//   - Request correlation logging for CORS events and security monitoring
-//   - Conditional CORS header application based on origin validation
-//   - Support for configurable HTTP methods, headers, and max-age
-//   - Comprehensive security warnings for wildcard origins
-//
-// Security: Uses restrictive defaults (no CORS headers unless origins configured).
-// Empty origins list results in no CORS headers being applied, following secure-by-default principle.
-// Wildcard "*" origins trigger security warnings and should only be used in development.
-//
-// Parameters:
-//   - config: CORSConfig with CORS behavior settings
-//
-// Returns:
-//   - Middleware: Configured CORS middleware function
-//
-// Example usage:
-//
-//	config := CORSConfig{
-//		Enabled: true,
-//		Origins: []string{"https://app.example.com", "https://admin.example.com"},
-//		Methods: "GET, POST, PUT, DELETE, OPTIONS",
-//		Headers: "Content-Type, Authorization, X-Request-ID",
-//	}
-//	server.Middleware().UseIf(len(config.Origins) > 0, CORSMiddlewareWithConfig(config))
-func CORSMiddlewareWithConfig(config CORSConfig) Middleware {
-	return func(next http.Handler) http.Handler {
-		// Skip CORS entirely if disabled or no origins configured
-		if !config.Enabled || len(config.Origins) == 0 {
-			return next
-		}
-
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin := r.Header.Get("Origin")
-			requestID := GetRequestID(r.Context())
-
-			// Check if origin is allowed (includes case-insensitive matching)
-			originAllowed := config.IsOriginAllowed(origin)
-
-			// Log CORS request for monitoring and security analysis
-			if origin != "" {
-				slog.Info("CORS request received",
-					LogFieldRequestID, requestID,
-					LogFieldCORSOrigin, origin,
-					LogFieldCORSMethod, r.Method,
-					LogFieldCORSAllowed, originAllowed)
-			}
-
-			// Set CORS headers if origin is allowed
-			if originAllowed {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Methods", config.Methods)
-				w.Header().Set("Access-Control-Allow-Headers", config.Headers)
-				w.Header().Set("Access-Control-Max-Age", config.MaxAge)
-				
-				// Set credentials header if configured
-				if config.Credentials {
-					w.Header().Set("Access-Control-Allow-Credentials", "true")
-				}
-			}
-
-			// Handle preflight OPTIONS requests
-			if r.Method == "OPTIONS" {
-				// Log preflight request with security context
-				slog.Info("CORS preflight request",
-					LogFieldRequestID, requestID,
-					LogFieldCORSOrigin, origin,
-					LogFieldCORSPreflight, true,
-					LogFieldCORSAllowed, originAllowed)
-
-				if originAllowed {
-					w.WriteHeader(http.StatusOK)
-				} else {
-					// Log security event for disallowed preflight
-					slog.Warn("CORS preflight request rejected",
-						LogFieldRequestID, requestID,
-						LogFieldCORSOrigin, origin,
-						"reason", "origin not allowed")
-					w.WriteHeader(http.StatusForbidden)
-				}
-				return
-			}
-
-			// Continue to next handler for non-preflight requests
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-```
-
-### Step 4: Create Comprehensive CORS Tests
-
-**File**: `internal/server/cors_test.go` (new file)
-
-```go
-package server
-
-import (
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 )
 
-func TestCORSConfig_LoadFromEnv(t *testing.T) {
-	// Save original environment
-	originalEnv := make(map[string]string)
-	envVars := []string{
-		"CIPHER_HUB_CORS_ENABLED",
-		"CIPHER_HUB_CORS_ORIGINS",
-		"CIPHER_HUB_CORS_METHODS",
-		"CIPHER_HUB_CORS_HEADERS",
-		"CIPHER_HUB_CORS_MAX_AGE",
-	}
-
-	for _, key := range envVars {
-		originalEnv[key] = os.Getenv(key)
-	}
-
-	// Clean up environment after test
-	defer func() {
-		for _, key := range envVars {
-			if val, exists := originalEnv[key]; exists {
-				os.Setenv(key, val)
-			} else {
-				os.Unsetenv(key)
-			}
-		}
-	}()
-
+func TestClassifyError(t *testing.T) {
 	tests := []struct {
-		name     string
-		envVars  map[string]string
-		expected CORSConfig
+		name             string
+		err              error
+		expectedCode     ErrorCode
+		expectedCategory ErrorCategory
 	}{
 		{
-			name:    "default values",
-			envVars: map[string]string{},
-			expected: CORSConfig{
-				Enabled: false,
-				Origins: nil,
-				Methods: DefaultCORSMethods,
-				Headers: DefaultCORSHeaders,
-				MaxAge:  DefaultCORSMaxAge,
-			},
+			name:             "invalid ID error",
+			err:              ErrInvalidID,
+			expectedCode:     ErrorCodeValidation,
+			expectedCategory: ErrorCategoryValidation,
 		},
 		{
-			name: "enabled with origins and custom config",
-			envVars: map[string]string{
-				"CIPHER_HUB_CORS_ENABLED": "true",
-				"CIPHER_HUB_CORS_ORIGINS": "https://app.example.com,https://admin.example.com",
-				"CIPHER_HUB_CORS_METHODS": "GET, POST, PUT",
-				"CIPHER_HUB_CORS_HEADERS": "Content-Type, Authorization",
-				"CIPHER_HUB_CORS_MAX_AGE": "3600",
-			},
-			expected: CORSConfig{
-				Enabled: true,
-				Origins: []string{"https://app.example.com", "https://admin.example.com"},
-				Methods: "GET, POST, PUT",
-				Headers: "Content-Type, Authorization",
-				MaxAge:  "3600",
-			},
+			name:             "invalid name error",
+			err:              ErrInvalidName,
+			expectedCode:     ErrorCodeValidation,
+			expectedCategory: ErrorCategoryValidation,
 		},
 		{
-			name: "origins without explicit enabled",
-			envVars: map[string]string{
-				"CIPHER_HUB_CORS_ORIGINS": "https://app.example.com",
-			},
-			expected: CORSConfig{
-				Enabled: true, // Should be enabled automatically when origins are set
-				Origins: []string{"https://app.example.com"},
-				Methods: DefaultCORSMethods,
-				Headers: DefaultCORSHeaders,
-				MaxAge:  DefaultCORSMaxAge,
-			},
+			name:             "invalid service ID error",
+			err:              ErrInvalidServiceID,
+			expectedCode:     ErrorCodeValidation,
+			expectedCategory: ErrorCategoryValidation,
 		},
 		{
-			name: "disabled explicitly with origins",
-			envVars: map[string]string{
-				"CIPHER_HUB_CORS_ENABLED": "false",
-				"CIPHER_HUB_CORS_ORIGINS": "https://app.example.com",
-			},
-			expected: CORSConfig{
-				Enabled: true, // Origins override disabled flag
-				Origins: []string{"https://app.example.com"},
-				Methods: DefaultCORSMethods,
-				Headers: DefaultCORSHeaders,
-				MaxAge:  DefaultCORSMaxAge,
-			},
+			name:             "unknown error",
+			err:              fmt.Errorf("unknown database error"),
+			expectedCode:     ErrorCodeInternal,
+			expectedCategory: ErrorCategoryInternal,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set environment variables
-			for key, value := range tt.envVars {
-				os.Setenv(key, value)
+			result := ClassifyError(tt.err)
+
+			if result.Code != tt.expectedCode {
+				t.Errorf("Code = %v, want %v", result.Code, tt.expectedCode)
 			}
 
-			config := CORSConfig{}
-			config.ApplyDefaults()
-			config.LoadFromEnv()
-
-			if config.Enabled != tt.expected.Enabled {
-				t.Errorf("Enabled = %v, want %v", config.Enabled, tt.expected.Enabled)
-			}
-
-			if len(config.Origins) != len(tt.expected.Origins) {
-				t.Errorf("Origins length = %v, want %v", len(config.Origins), len(tt.expected.Origins))
-			} else {
-				for i, origin := range config.Origins {
-					if origin != tt.expected.Origins[i] {
-						t.Errorf("Origins[%d] = %v, want %v", i, origin, tt.expected.Origins[i])
-					}
-				}
-			}
-
-			if config.Methods != tt.expected.Methods {
-				t.Errorf("Methods = %v, want %v", config.Methods, tt.expected.Methods)
-			}
-
-			if config.Headers != tt.expected.Headers {
-				t.Errorf("Headers = %v, want %v", config.Headers, tt.expected.Headers)
-			}
-
-			if config.MaxAge != tt.expected.MaxAge {
-				t.Errorf("MaxAge = %v, want %v", config.MaxAge, tt.expected.MaxAge)
+			if result.Category != tt.expectedCategory {
+				t.Errorf("Category = %v, want %v", result.Category, tt.expectedCategory)
 			}
 		})
 	}
 }
 
-func TestCORSConfig_Validate(t *testing.T) {
+func TestSanitizeErrorMessage(t *testing.T) {
 	tests := []struct {
-		name    string
-		config  CORSConfig
-		wantErr bool
-		errMsg  string
+		name            string
+		err             error
+		expectedMessage string
 	}{
 		{
-			name: "valid configuration",
-			config: CORSConfig{
-				Origins: []string{"https://app.example.com", "http://localhost:3000"},
-			},
-			wantErr: false,
+			name:            "invalid ID error",
+			err:             ErrInvalidID,
+			expectedMessage: "Invalid identifier provided",
 		},
 		{
-			name: "wildcard origin (valid but warns)",
-			config: CORSConfig{
-				Origins: []string{"*"},
-			},
-			wantErr: false, // Valid but should warn
+			name:            "invalid name error",
+			err:             ErrInvalidName,
+			expectedMessage: "Invalid name provided",
 		},
 		{
-			name: "invalid origin URL",
-			config: CORSConfig{
-				Origins: []string{"not-a-valid-url"},
-			},
-			wantErr: true,
-			errMsg:  "invalid origin URL",
+			name:            "internal error with sensitive details",
+			err:             fmt.Errorf("database password authentication failed for user admin"),
+			expectedMessage: "An internal error occurred",
 		},
 		{
-			name: "mixed valid and invalid origins",
-			config: CORSConfig{
-				Origins: []string{"https://app.example.com", "invalid-url"},
-			},
-			wantErr: true,
-			errMsg:  "invalid origin URL",
+			name:            "error with file path",
+			err:             fmt.Errorf("failed to read /etc/passwd"),
+			expectedMessage: "An internal error occurred",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.config.Validate()
-			
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("Validate() expected error, got nil")
-					return
-				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Validate() unexpected error: %v", err)
-				}
+			result := SanitizeErrorMessage(tt.err)
+
+			if result != tt.expectedMessage {
+				t.Errorf("SanitizeErrorMessage() = %v, want %v", result, tt.expectedMessage)
+			}
+
+			// Verify no sensitive information is leaked
+			if strings.Contains(result, "password") {
+				t.Error("Sanitized message should not contain sensitive information like 'password'")
+			}
+			if strings.Contains(result, "/etc/") {
+				t.Error("Sanitized message should not contain file paths")
+			}
+			if strings.Contains(result, "admin") {
+				t.Error("Sanitized message should not contain usernames")
 			}
 		})
 	}
 }
 
-func TestCORSConfig_IsOriginAllowed(t *testing.T) {
+func TestIsValidationError(t *testing.T) {
 	tests := []struct {
 		name     string
-		config   CORSConfig
-		origin   string
+		err      error
 		expected bool
 	}{
 		{
-			name: "no origins configured",
-			config: CORSConfig{
-				Origins: []string{},
-			},
-			origin:   "https://app.example.com",
-			expected: false,
-		},
-		{
-			name: "origin allowed (exact match)",
-			config: CORSConfig{
-				Origins: []string{"https://app.example.com", "http://localhost:3000"},
-			},
-			origin:   "https://app.example.com",
+			name:     "validation error",
+			err:      ErrInvalidID,
 			expected: true,
 		},
 		{
-			name: "origin not allowed",
-			config: CORSConfig{
-				Origins: []string{"https://app.example.com"},
-			},
-			origin:   "http://evil.com",
-			expected: false,
-		},
-		{
-			name: "wildcard origin",
-			config: CORSConfig{
-				Origins: []string{"*"},
-			},
-			origin:   "https://anywhere.com",
+			name:     "another validation error",
+			err:      ErrInvalidName,
 			expected: true,
 		},
 		{
-			name: "case insensitive scheme matching",
-			config: CORSConfig{
-				Origins: []string{"https://app.example.com"},
-			},
-			origin:   "HTTPS://app.example.com",
-			expected: true,
-		},
-		{
-			name: "case insensitive host matching",
-			config: CORSConfig{
-				Origins: []string{"https://app.example.com"},
-			},
-			origin:   "https://APP.EXAMPLE.COM",
-			expected: true,
-		},
-		{
-			name: "case insensitive full URL matching",
-			config: CORSConfig{
-				Origins: []string{"http://localhost:3000"},
-			},
-			origin:   "HTTP://LOCALHOST:3000",
-			expected: true,
-		},
-		{
-			name: "different scheme should not match",
-			config: CORSConfig{
-				Origins: []string{"https://app.example.com"},
-			},
-			origin:   "http://app.example.com",
-			expected: false,
-		},
-		{
-			name: "different port should not match",
-			config: CORSConfig{
-				Origins: []string{"http://localhost:3000"},
-			},
-			origin:   "http://localhost:8080",
+			name:     "internal error",
+			err:      fmt.Errorf("database connection failed"),
 			expected: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tt.config.IsOriginAllowed(tt.origin)
+			result := IsValidationError(tt.err)
 			if result != tt.expected {
-				t.Errorf("IsOriginAllowed(%q) = %v, want %v", tt.origin, result, tt.expected)
+				t.Errorf("IsValidationError() = %v, want %v", result, tt.expected)
 			}
 		})
 	}
 }
 
-func TestNormalizeOrigin(t *testing.T) {
+func TestIsInternalError(t *testing.T) {
 	tests := []struct {
 		name     string
-		origin   string
-		expected string
+		err      error
+		expected bool
 	}{
 		{
-			name:     "lowercase scheme and host",
-			origin:   "HTTPS://APP.EXAMPLE.COM",
-			expected: "https://app.example.com",
+			name:     "validation error",
+			err:      ErrInvalidID,
+			expected: false,
 		},
 		{
-			name:     "preserve port",
-			origin:   "HTTP://LOCALHOST:3000",
-			expected: "http://localhost:3000",
-		},
-		{
-			name:     "preserve path case",
-			origin:   "https://API.EXAMPLE.COM/API/v1",
-			expected: "https://api.example.com/API/v1",
-		},
-		{
-			name:     "already lowercase",
-			origin:   "https://app.example.com",
-			expected: "https://app.example.com",
-		},
-		{
-			name:     "malformed URL fallback",
-			origin:   "not-a-valid-url",
-			expected: "not-a-valid-url", // Fallback to lowercase
+			name:     "internal error",
+			err:      fmt.Errorf("database connection failed"),
+			expected: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := normalizeOrigin(tt.origin)
+			result := IsInternalError(tt.err)
 			if result != tt.expected {
-				t.Errorf("normalizeOrigin(%q) = %q, want %q", tt.origin, result, tt.expected)
+				t.Errorf("IsInternalError() = %v, want %v", result, tt.expected)
 			}
 		})
 	}
 }
 
-func TestCORSMiddleware(t *testing.T) {
-	middleware := CORSMiddleware()
-
-	// Create test handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request ID is available in context
-		requestID := GetRequestID(r.Context())
-		if requestID == "" {
-			t.Error("Request ID not found in context")
-		}
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
-	})
-
-	// Apply middleware
-	wrappedHandler := middleware(handler)
-
-	// Create test request with Origin header
-	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Origin", "http://localhost:3000")
-
-	w := httptest.NewRecorder()
-
-	// Execute request
-	wrappedHandler.ServeHTTP(w, req)
-
-	// Verify response (no CORS headers since no origins configured by default)
-	if w.Header().Get("Access-Control-Allow-Origin") != "" {
-		t.Error("CORS headers should not be set without configured origins")
+func TestErrorClassificationSecurity(t *testing.T) {
+	// Test that sensitive information is never exposed
+	sensitiveErrors := []error{
+		fmt.Errorf("database password authentication failed for user admin"),
+		fmt.Errorf("failed to read /etc/passwd"),
+		fmt.Errorf("SQL injection detected: DROP TABLE users"),
+		fmt.Errorf("internal file path: /home/app/secrets/api_keys.txt"),
 	}
 
-	// Verify response body
-	if w.Code != http.StatusOK {
-		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	if w.Body.String() != "test response" {
-		t.Errorf("Response body = %q, want %q", w.Body.String(), "test response")
-	}
-}
-
-func TestCORSMiddlewareWithConfig(t *testing.T) {
-	tests := []struct {
-		name           string
-		config         CORSConfig
-		requestOrigin  string
-		method         string
-		expectCORS     bool
-		expectedOrigin string
-		expectedStatus int
-	}{
-		{
-			name: "CORS disabled",
-			config: CORSConfig{
-				Enabled: false,
-				Origins: []string{},
-			},
-			requestOrigin:  "http://localhost:3000",
-			method:         "GET",
-			expectCORS:     false,
-			expectedOrigin: "",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name: "allowed origin GET request",
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"http://localhost:3000"},
-				Methods: DefaultCORSMethods,
-				Headers: DefaultCORSHeaders,
-			},
-			requestOrigin:  "http://localhost:3000",
-			method:         "GET",
-			expectCORS:     true,
-			expectedOrigin: "http://localhost:3000",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name: "disallowed origin GET request",
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"http://localhost:3000"},
-				Methods: DefaultCORSMethods,
-				Headers: DefaultCORSHeaders,
-			},
-			requestOrigin:  "http://evil.com",
-			method:         "GET",
-			expectCORS:     false,
-			expectedOrigin: "",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name: "allowed origin OPTIONS preflight",
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"http://localhost:3000"},
-				Methods: DefaultCORSMethods,
-				Headers: DefaultCORSHeaders,
-			},
-			requestOrigin:  "http://localhost:3000",
-			method:         "OPTIONS",
-			expectCORS:     true,
-			expectedOrigin: "http://localhost:3000",
-			expectedStatus: http.StatusOK,
-		},
-		{
-			name: "disallowed origin OPTIONS preflight",
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"http://localhost:3000"},
-				Methods: DefaultCORSMethods,
-				Headers: DefaultCORSHeaders,
-			},
-			requestOrigin:  "http://evil.com",
-			method:         "OPTIONS",
-			expectCORS:     false,
-			expectedOrigin: "",
-			expectedStatus: http.StatusForbidden,
-		},
-		{
-			name: "wildcard origin",
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"*"},
-				Methods: DefaultCORSMethods,
-				Headers: DefaultCORSHeaders,
-			},
-			requestOrigin:  "http://anywhere.com",
-			method:         "GET",
-			expectCORS:     true,
-			expectedOrigin: "http://anywhere.com",
-			expectedStatus: http.StatusOK,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			middleware := CORSMiddlewareWithConfig(tt.config)
-
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requestID := GetRequestID(r.Context())
-				if requestID == "" {
-					t.Error("Request ID not available in handler context")
-				}
-
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("handler response"))
-			})
-
-			wrappedHandler := middleware(handler)
-
-			req := httptest.NewRequest(tt.method, "/test", nil)
-			if tt.requestOrigin != "" {
-				req.Header.Set("Origin", tt.requestOrigin)
+	for _, err := range sensitiveErrors {
+		t.Run(err.Error(), func(t *testing.T) {
+			// Test sanitized message
+			message := SanitizeErrorMessage(err)
+			if message != "An internal error occurred" {
+				t.Errorf("Sensitive error should be sanitized, got: %v", message)
 			}
 
-			w := httptest.NewRecorder()
-
-			wrappedHandler.ServeHTTP(w, req)
-
-			// Verify CORS headers
-			corsOrigin := w.Header().Get("Access-Control-Allow-Origin")
-			if tt.expectCORS {
-				if corsOrigin != tt.expectedOrigin {
-					t.Errorf("Access-Control-Allow-Origin = %q, want %q", corsOrigin, tt.expectedOrigin)
-				}
-
-				if methods := w.Header().Get("Access-Control-Allow-Methods"); methods == "" {
-					t.Error("Access-Control-Allow-Methods should be set for allowed origins")
-				}
-
-				if headers := w.Header().Get("Access-Control-Allow-Headers"); headers == "" {
-					t.Error("Access-Control-Allow-Headers should be set for allowed origins")
-				}
-			} else {
-				if corsOrigin != "" {
-					t.Errorf("Access-Control-Allow-Origin should not be set, got %q", corsOrigin)
-				}
+			// Test classification
+			classification := ClassifyError(err)
+			if classification.Code != ErrorCodeInternal {
+				t.Errorf("Sensitive error should be classified as internal, got: %v", classification.Code)
 			}
 
-			// Verify response status
-			if w.Code != tt.expectedStatus {
-				t.Errorf("Response status = %d, want %d", w.Code, tt.expectedStatus)
-			}
-
-			// Verify handler was called for non-OPTIONS or allowed OPTIONS requests
-			if tt.method != "OPTIONS" || (tt.method == "OPTIONS" && tt.expectCORS) {
-				if tt.method != "OPTIONS" && w.Body.String() != "handler response" {
-					t.Errorf("Handler response = %q, want %q", w.Body.String(), "handler response")
+			// Verify no sensitive patterns in sanitized message
+			sensitivePatterns := []string{"password", "admin", "/etc/", "DROP TABLE", "/home/app/"}
+			for _, pattern := range sensitivePatterns {
+				if strings.Contains(message, pattern) {
+					t.Errorf("Sanitized message should not contain sensitive pattern %q, got: %v", pattern, message)
 				}
 			}
 		})
-	}
-}
-
-func TestCORSMiddleware_EdgeCases(t *testing.T) {
-	tests := []struct {
-		name      string
-		setupReq  func() *http.Request
-		config    CORSConfig
-		expectErr bool
-	}{
-		{
-			name: "no origin header",
-			setupReq: func() *http.Request {
-				return httptest.NewRequest("GET", "/test", nil)
-			},
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"http://localhost:3000"},
-			},
-			expectErr: false,
-		},
-		{
-			name: "empty origin header",
-			setupReq: func() *http.Request {
-				req := httptest.NewRequest("GET", "/test", nil)
-				req.Header.Set("Origin", "")
-				return req
-			},
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"http://localhost:3000"},
-			},
-			expectErr: false,
-		},
-		{
-			name: "malformed origin header",
-			setupReq: func() *http.Request {
-				req := httptest.NewRequest("GET", "/test", nil)
-				req.Header.Set("Origin", "not-a-valid-url")
-				return req
-			},
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"http://localhost:3000"},
-			},
-			expectErr: false,
-		},
-		{
-			name: "case sensitive origin matching",
-			setupReq: func() *http.Request {
-				req := httptest.NewRequest("GET", "/test", nil)
-				req.Header.Set("Origin", "HTTP://LOCALHOST:3000")
-				return req
-			},
-			config: CORSConfig{
-				Enabled: true,
-				Origins: []string{"http://localhost:3000"},
-			},
-			expectErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			middleware := CORSMiddlewareWithConfig(tt.config)
-
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requestID := GetRequestID(r.Context())
-				if requestID == "" {
-					t.Error("Request ID should be available")
-				}
-				w.WriteHeader(http.StatusOK)
-			})
-
-			wrappedHandler := middleware(handler)
-			req := tt.setupReq()
-			w := httptest.NewRecorder()
-
-			// Should not panic or fail regardless of request content
-			wrappedHandler.ServeHTTP(w, req)
-
-			if tt.expectErr {
-				if w.Code < 400 {
-					t.Errorf("Expected error response, got status %d", w.Code)
-				}
-			} else {
-				if w.Code != http.StatusOK {
-					t.Errorf("Expected success response, got status %d", w.Code)
-				}
-			}
-		})
-	}
-}
-
-func TestCORSMiddleware_RequestCorrelation(t *testing.T) {
-	config := CORSConfig{
-		Enabled: true,
-		Origins: []string{"http://localhost:3000"},
-		Methods: DefaultCORSMethods,
-		Headers: DefaultCORSHeaders,
-	}
-
-	middleware := CORSMiddlewareWithConfig(config)
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request ID is available for correlation
-		requestID := GetRequestID(r.Context())
-		if requestID == "" {
-			t.Error("Request ID should be available for CORS correlation")
-		}
-
-		// Verify request ID format
-		if len(requestID) != RequestIDHexLength {
-			t.Errorf("Request ID length = %d, want %d", len(requestID), RequestIDHexLength)
-		}
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("correlation test"))
-	})
-
-	// We need to wrap with request logging middleware to generate request ID
-	wrappedHandler := RequestLoggingMiddleware()(middleware(handler))
-
-	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Origin", "http://localhost:3000")
-
-	w := httptest.NewRecorder()
-
-	wrappedHandler.ServeHTTP(w, req)
-
-	// Verify request ID was added by request logging middleware
-	requestID := w.Header().Get("X-Request-ID")
-	if requestID == "" {
-		t.Error("X-Request-ID header should be present from request logging middleware")
-	}
-
-	// Verify CORS headers were applied
-	if w.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
-		t.Error("CORS headers should be applied for allowed origin")
-	}
-
-	// Verify response
-	if w.Code != http.StatusOK {
-		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	if w.Body.String() != "correlation test" {
-		t.Errorf("Response body = %q, want %q", w.Body.String(), "correlation test")
 	}
 }
 ```
 
-### Step 5: Add Server Integration Tests
+### Step 3: Create HTTP Error Response Structures and Middleware
+
+**File**: `internal/server/error_response.go` (new file)
+
+```go
+package server
+
+import (
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
+	"time"
+
+	"cipher-hub/internal/models"
+)
+
+// Error response constants
+const (
+	// Error handling
+	ErrorResponsePrefix = "ErrorResponse"
+
+	// Log field names for consistency
+	LogFieldErrorType     = "error_type"
+	LogFieldErrorCode     = "error_code"
+	LogFieldErrorCategory = "error_category"
+	LogFieldPanicStack    = "panic_stack"
+)
+
+// ErrorResponse provides standardized JSON error response structure
+type ErrorResponse struct {
+	Error     models.ErrorClassification `json:"error"`
+	Message   string                     `json:"message"`
+	RequestID string                     `json:"request_id"`
+	Timestamp time.Time                  `json:"timestamp"`
+	Details   interface{}                `json:"details,omitempty"`
+}
+
+// ErrorResponseConfig holds configuration for error response middleware
+type ErrorResponseConfig struct {
+	IncludeDetails bool `json:"include_details"` // Include additional error details
+	LogFullErrors  bool `json:"log_full_errors"` // Log complete error information
+}
+
+// NewErrorResponse creates a standardized error response with request correlation
+// Uses core error classification from models package
+func NewErrorResponse(err error, requestID string) *ErrorResponse {
+	errorClassification := models.ClassifyError(err)
+	message := models.SanitizeErrorMessage(err)
+
+	return &ErrorResponse{
+		Error:     errorClassification,
+		Message:   message,
+		RequestID: requestID,
+		Timestamp: time.Now().UTC(),
+	}
+}
+
+// NewErrorResponseWithDetails creates an error response with additional details
+func NewErrorResponseWithDetails(err error, requestID string, details interface{}) *ErrorResponse {
+	response := NewErrorResponse(err, requestID)
+	response.Details = details
+	return response
+}
+
+// mapErrorToStatusCode maps error classifications to appropriate HTTP status codes
+func mapErrorToStatusCode(err error) int {
+	if models.IsValidationError(err) {
+		return http.StatusBadRequest
+	}
+	
+	// Add more specific mappings as needed
+	switch models.ClassifyError(err).Code {
+	case models.ErrorCodeAuthentication:
+		return http.StatusUnauthorized
+	case models.ErrorCodeAuthorization:
+		return http.StatusForbidden
+	case models.ErrorCodeNotFound:
+		return http.StatusNotFound
+	case models.ErrorCodeValidation, models.ErrorCodeBadRequest:
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// writeErrorResponse writes a standardized JSON error response
+func writeErrorResponse(w http.ResponseWriter, err error, requestID string) {
+	errorResponse := NewErrorResponse(err, requestID)
+	statusCode := mapErrorToStatusCode(err)
+
+	// Set content type and status code
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+
+	// Encode and write JSON response
+	if encodeErr := json.NewEncoder(w).Encode(errorResponse); encodeErr != nil {
+		// Fallback to plain text if JSON encoding fails
+		slog.Error("Failed to encode error response",
+			LogFieldRequestID, requestID,
+			"encode_error", encodeErr,
+			"original_error", err)
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Internal server error")
+	}
+}
+```
+
+### Step 4: Implement Error Response Middleware
+
+**Continue in**: `internal/server/error_response.go`
+
+```go
+// ErrorResponseMiddleware creates middleware that handles error responses and panic recovery.
+// Uses default configuration with comprehensive error logging enabled.
+//
+// Returns:
+//   - Middleware: Configured error response middleware function
+func ErrorResponseMiddleware() Middleware {
+	config := ErrorResponseConfig{
+		IncludeDetails: false, // Secure default - no details
+		LogFullErrors:  true,  // Log full errors for debugging
+	}
+	return ErrorResponseMiddlewareWithConfig(config)
+}
+
+// ErrorResponseMiddlewareWithConfig creates middleware with custom error response configuration.
+// Provides standardized JSON error responses, panic recovery, and request correlation.
+//
+// Features:
+//   - Standardized JSON error response format with request correlation
+//   - Panic recovery with structured error responses and stack trace logging
+//   - Security-conscious error message sanitization using models package
+//   - HTTP status code mapping based on error classifications
+//   - Integration with request logging for error correlation and debugging
+//   - Configurable error detail inclusion for different environments
+//   - Comprehensive error logging with request context
+//
+// Security: Prevents sensitive information leakage by using sanitized error messages
+// from the models package. All errors are logged with full details for internal debugging
+// while returning safe, user-friendly messages to clients.
+//
+// Parameters:
+//   - config: ErrorResponseConfig with error handling behavior settings
+//
+// Returns:
+//   - Middleware: Configured error response middleware function
+//
+// Example usage:
+//
+//	config := ErrorResponseConfig{
+//		IncludeDetails: false, // Production setting
+//		LogFullErrors:  true,  // Enable full error logging
+//	}
+//	server.Middleware().Use(ErrorResponseMiddlewareWithConfig(config))
+func ErrorResponseMiddlewareWithConfig(config ErrorResponseConfig) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Get request ID for correlation
+			requestID := GetRequestID(r.Context())
+
+			// Panic recovery with structured error response
+			defer func() {
+				if rec := recover(); rec != nil {
+					// Log panic with full details and stack trace
+					if config.LogFullErrors {
+						slog.Error("Panic recovered in error response middleware",
+							LogFieldRequestID, requestID,
+							"panic", rec,
+							LogFieldPanicStack, string(debug.Stack()),
+							"url", r.URL.String(),
+							"method", r.Method)
+					}
+
+					// Create generic error for panic (uses models.ClassifyError internally)
+					panicErr := fmt.Errorf("internal server error")
+					writeErrorResponse(w, panicErr, requestID)
+				}
+			}()
+
+			// Create response writer wrapper to capture status
+			wrapped := newResponseWriter(w)
+
+			// Call next handler
+			next.ServeHTTP(wrapped, r)
+
+			// Note: This middleware handles panics but doesn't intercept
+			// explicit error responses from handlers. Handlers should use
+			// HandleError() directly for explicit error handling.
+		})
+	}
+}
+
+// HandleError is a utility function for handlers to write standardized error responses
+// This function should be used by handlers when they need to return error responses
+//
+// Uses core error classification and sanitization from models package
+//
+// Parameters:
+//   - w: HTTP response writer
+//   - r: HTTP request for context
+//   - err: Error to handle and format
+//
+// Example usage in a handler:
+//
+//	func MyHandler(w http.ResponseWriter, r *http.Request) {
+//		if err := someOperation(); err != nil {
+//			HandleError(w, r, err)
+//			return
+//		}
+//		// Success path...
+//	}
+func HandleError(w http.ResponseWriter, r *http.Request, err error) {
+	requestID := GetRequestID(r.Context())
+	classification := models.ClassifyError(err)
+
+	// Log full error details for debugging
+	slog.Error("Handler error occurred",
+		LogFieldRequestID, requestID,
+		"error", err,
+		LogFieldErrorType, fmt.Sprintf("%T", err),
+		LogFieldErrorCode, classification.Code,
+		LogFieldErrorCategory, classification.Category,
+		"url", r.URL.String(),
+		"method", r.Method)
+
+	// Write standardized error response
+	writeErrorResponse(w, err, requestID)
+}
+
+// HandleErrorWithDetails is a utility function for handlers to write error responses with additional details
+// Should only be used when additional context is safe to expose to clients
+//
+// Parameters:
+//   - w: HTTP response writer
+//   - r: HTTP request for context
+//   - err: Error to handle and format
+//   - details: Additional details safe for client consumption
+func HandleErrorWithDetails(w http.ResponseWriter, r *http.Request, err error, details interface{}) {
+	requestID := GetRequestID(r.Context())
+	classification := models.ClassifyError(err)
+
+	// Log full error details for debugging
+	slog.Error("Handler error occurred with details",
+		LogFieldRequestID, requestID,
+		"error", err,
+		LogFieldErrorType, fmt.Sprintf("%T", err),
+		LogFieldErrorCode, classification.Code,
+		LogFieldErrorCategory, classification.Category,
+		"details", details,
+		"url", r.URL.String(),
+		"method", r.Method)
+
+	// Create error response with details
+	errorResponse := NewErrorResponseWithDetails(err, requestID, details)
+	statusCode := mapErrorToStatusCode(err)
+
+	// Set content type and status code
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+
+	// Encode and write JSON response
+	if encodeErr := json.NewEncoder(w).Encode(errorResponse); encodeErr != nil {
+		// Fallback to standard error response
+		slog.Error("Failed to encode error response with details",
+			LogFieldRequestID, requestID,
+			"encode_error", encodeErr,
+			"original_error", err)
+
+		writeErrorResponse(w, err, requestID)
+	}
+}
+```
+
+### Step 5: Create HTTP Error Response Tests
+
+**File**: `internal/server/error_response_test.go` (new file)
+
+```go
+package server
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"cipher-hub/internal/models"
+)
+
+func TestNewErrorResponse(t *testing.T) {
+	tests := []struct {
+		name            string
+		err             error
+		requestID       string
+		expectedCode    models.ErrorCode
+		expectedCategory models.ErrorCategory
+		expectedMessage string
+	}{
+		{
+			name:             "invalid ID error",
+			err:              models.ErrInvalidID,
+			requestID:        "test-request-123",
+			expectedCode:     models.ErrorCodeValidation,
+			expectedCategory: models.ErrorCategoryValidation,
+			expectedMessage:  "Invalid identifier provided",
+		},
+		{
+			name:             "invalid name error",
+			err:              models.ErrInvalidName,
+			requestID:        "test-request-456",
+			expectedCode:     models.ErrorCodeValidation,
+			expectedCategory: models.ErrorCategoryValidation,
+			expectedMessage:  "Invalid name provided",
+		},
+		{
+			name:             "internal error",
+			err:              fmt.Errorf("database connection failed"),
+			requestID:        "test-request-789",
+			expectedCode:     models.ErrorCodeInternal,
+			expectedCategory: models.ErrorCategoryInternal,
+			expectedMessage:  "An internal error occurred",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := NewErrorResponse(tt.err, tt.requestID)
+
+			if response.Error.Code != tt.expectedCode {
+				t.Errorf("Error.Code = %v, want %v", response.Error.Code, tt.expectedCode)
+			}
+
+			if response.Error.Category != tt.expectedCategory {
+				t.Errorf("Error.Category = %v, want %v", response.Error.Category, tt.expectedCategory)
+			}
+
+			if response.Message != tt.expectedMessage {
+				t.Errorf("Message = %v, want %v", response.Message, tt.expectedMessage)
+			}
+
+			if response.RequestID != tt.requestID {
+				t.Errorf("RequestID = %v, want %v", response.RequestID, tt.requestID)
+			}
+
+			// Check timestamp is recent (within last 5 seconds)
+			if time.Since(response.Timestamp) > 5*time.Second {
+				t.Errorf("Timestamp should be recent, got %v", response.Timestamp)
+			}
+
+			// Verify JSON serialization
+			jsonData, err := json.Marshal(response)
+			if err != nil {
+				t.Errorf("Failed to marshal error response: %v", err)
+			}
+
+			var unmarshaled ErrorResponse
+			if err := json.Unmarshal(jsonData, &unmarshaled); err != nil {
+				t.Errorf("Failed to unmarshal error response: %v", err)
+			}
+
+			if unmarshaled.RequestID != tt.requestID {
+				t.Errorf("Unmarshaled RequestID = %v, want %v", unmarshaled.RequestID, tt.requestID)
+			}
+		})
+	}
+}
+
+func TestNewErrorResponseWithDetails(t *testing.T) {
+	err := models.ErrInvalidID
+	requestID := "test-request-123"
+	details := map[string]string{"field": "user_id", "value": "invalid-format"}
+
+	response := NewErrorResponseWithDetails(err, requestID, details)
+
+	if response.Details == nil {
+		t.Error("Details should not be nil")
+	}
+
+	// Verify details can be marshaled
+	jsonData, err := json.Marshal(response)
+	if err != nil {
+		t.Errorf("Failed to marshal error response with details: %v", err)
+	}
+
+	var unmarshaled ErrorResponse
+	if err := json.Unmarshal(jsonData, &unmarshaled); err != nil {
+		t.Errorf("Failed to unmarshal error response with details: %v", err)
+	}
+
+	if unmarshaled.Details == nil {
+		t.Error("Unmarshaled details should not be nil")
+	}
+}
+
+func TestMapErrorToStatusCode(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+	}{
+		{
+			name:           "validation error - invalid ID",
+			err:            models.ErrInvalidID,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "validation error - invalid name",
+			err:            models.ErrInvalidName,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "validation error - invalid algorithm",
+			err:            models.ErrInvalidAlgorithm,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "internal error",
+			err:            fmt.Errorf("database connection failed"),
+			expectedStatus: http.StatusInternalServerError,
+		},
+		{
+			name:           "unknown error",
+			err:            fmt.Errorf("unexpected error"),
+			expectedStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := mapErrorToStatusCode(tt.err)
+
+			if result != tt.expectedStatus {
+				t.Errorf("mapErrorToStatusCode() = %v, want %v", result, tt.expectedStatus)
+			}
+		})
+	}
+}
+
+func TestWriteErrorResponse(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		requestID      string
+		expectedStatus int
+	}{
+		{
+			name:           "validation error",
+			err:            models.ErrInvalidID,
+			requestID:      "test-request-123",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "internal error",
+			err:            fmt.Errorf("database error"),
+			requestID:      "test-request-456",
+			expectedStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeErrorResponse(w, tt.err, tt.requestID)
+
+			// Check status code
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Status code = %v, want %v", w.Code, tt.expectedStatus)
+			}
+
+			// Check content type
+			contentType := w.Header().Get("Content-Type")
+			if contentType != "application/json" {
+				t.Errorf("Content-Type = %v, want application/json", contentType)
+			}
+
+			// Check JSON response structure
+			var response ErrorResponse
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Errorf("Failed to decode JSON response: %v", err)
+			}
+
+			if response.RequestID != tt.requestID {
+				t.Errorf("Response RequestID = %v, want %v", response.RequestID, tt.requestID)
+			}
+
+			if response.Error.Code == "" {
+				t.Error("Response should have error code")
+			}
+
+			if response.Message == "" {
+				t.Error("Response should have error message")
+			}
+		})
+	}
+}
+
+func TestErrorResponseMiddleware(t *testing.T) {
+	middleware := ErrorResponseMiddleware()
+
+	// Test normal operation (no error)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("success"))
+	})
+
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status code = %v, want %v", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "success" {
+		t.Errorf("Response body = %v, want success", w.Body.String())
+	}
+}
+
+func TestErrorResponseMiddleware_PanicRecovery(t *testing.T) {
+	middleware := ErrorResponseMiddleware()
+
+	// Test panic recovery
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("test panic")
+	})
+
+	wrappedHandler := middleware(handler)
+
+	// Need request logging middleware to provide request ID
+	fullMiddleware := RequestLoggingMiddleware()(wrappedHandler)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	// Should not panic
+	fullMiddleware.ServeHTTP(w, req)
+
+	// Should return error response
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Status code = %v, want %v", w.Code, http.StatusInternalServerError)
+	}
+
+	// Should be JSON response
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %v, want application/json", contentType)
+	}
+
+	// Should have structured error response
+	var response ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Errorf("Failed to decode JSON response: %v", err)
+	}
+
+	if response.Error.Code != models.ErrorCodeInternal {
+		t.Errorf("Error code = %v, want %v", response.Error.Code, models.ErrorCodeInternal)
+	}
+
+	if response.RequestID == "" {
+		t.Error("Response should have request ID")
+	}
+}
+
+func TestHandleError(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		expectedStatus int
+		expectedCode   models.ErrorCode
+	}{
+		{
+			name:           "validation error",
+			err:            models.ErrInvalidID,
+			expectedStatus: http.StatusBadRequest,
+			expectedCode:   models.ErrorCodeValidation,
+		},
+		{
+			name:           "internal error",
+			err:            fmt.Errorf("database error"),
+			expectedStatus: http.StatusInternalServerError,
+			expectedCode:   models.ErrorCodeInternal,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", "/test", nil)
+
+			// Add request ID to context
+			ctx := WithRequestID(req.Context(), "test-request-123")
+			req = req.WithContext(ctx)
+
+			HandleError(w, req, tt.err)
+
+			// Check status code
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Status code = %v, want %v", w.Code, tt.expectedStatus)
+			}
+
+			// Check JSON response
+			var response ErrorResponse
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Errorf("Failed to decode JSON response: %v", err)
+			}
+
+			if response.Error.Code != tt.expectedCode {
+				t.Errorf("Error code = %v, want %v", response.Error.Code, tt.expectedCode)
+			}
+
+			if response.RequestID != "test-request-123" {
+				t.Errorf("Request ID = %v, want test-request-123", response.RequestID)
+			}
+		})
+	}
+}
+
+func TestHandleErrorWithDetails(t *testing.T) {
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/test", nil)
+
+	// Add request ID to context
+	ctx := WithRequestID(req.Context(), "test-request-123")
+	req = req.WithContext(ctx)
+
+	err := models.ErrInvalidID
+	details := map[string]string{"field": "user_id", "value": "invalid"}
+
+	HandleErrorWithDetails(w, req, err, details)
+
+	// Check status code
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Status code = %v, want %v", w.Code, http.StatusBadRequest)
+	}
+
+	// Check JSON response
+	var response ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Errorf("Failed to decode JSON response: %v", err)
+	}
+
+	if response.Details == nil {
+		t.Error("Response should include details")
+	}
+
+	if response.RequestID != "test-request-123" {
+		t.Errorf("Request ID = %v, want test-request-123", response.RequestID)
+	}
+}
+
+func TestErrorResponseIntegrationWithModels(t *testing.T) {
+	// Test that server error responses correctly use models package functionality
+	testErrors := []error{
+		models.ErrInvalidID,
+		models.ErrInvalidName,
+		models.ErrInvalidServiceID,
+		fmt.Errorf("some internal error"),
+	}
+
+	for _, err := range testErrors {
+		t.Run(err.Error(), func(t *testing.T) {
+			response := NewErrorResponse(err, "test-123")
+
+			// Verify classification came from models package
+			expectedClassification := models.ClassifyError(err)
+			if response.Error.Code != expectedClassification.Code {
+				t.Errorf("Error code = %v, want %v", response.Error.Code, expectedClassification.Code)
+			}
+			if response.Error.Category != expectedClassification.Category {
+				t.Errorf("Error category = %v, want %v", response.Error.Category, expectedClassification.Category)
+			}
+
+			// Verify message came from models package
+			expectedMessage := models.SanitizeErrorMessage(err)
+			if response.Message != expectedMessage {
+				t.Errorf("Message = %v, want %v", response.Message, expectedMessage)
+			}
+		})
+	}
+}
+```
+
+### Step 4: Add Server Integration Tests
 
 **File**: `internal/server/server_test.go` (add these tests to existing file)
 
 ```go
-func TestServer_CORSMiddleware(t *testing.T) {
+func TestServer_ErrorResponseMiddleware(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -1229,29 +1273,15 @@ func TestServer_CORSMiddleware(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Configure CORS middleware with specific origins
-	corsConfig := CORSConfig{
-		Enabled: true,
-		Origins: []string{"http://localhost:3000", "https://app.example.com"},
-		Methods: DefaultCORSMethods,
-		Headers: DefaultCORSHeaders,
-	}
-
-	// Add middleware with conditional application
+	// Add middleware stack with error response handling
 	server.Middleware().
 		Use(RequestLoggingMiddleware()).
-		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig))
+		Use(ErrorResponseMiddleware())
 
-	// Set test handler
+	// Set test handler that returns an error
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request ID is available in handler
-		requestID := GetRequestID(r.Context())
-		if requestID == "" {
-			t.Error("Request ID not available in handler context")
-		}
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("CORS test response"))
+		// Simulate a validation error
+		HandleError(w, r, models.ErrInvalidID)
 	}))
 
 	// Start server
@@ -1265,10 +1295,8 @@ func TestServer_CORSMiddleware(t *testing.T) {
 		}
 	}()
 
-	// Test CORS request integration
+	// Test error response integration
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Origin", "http://localhost:3000")
-
 	w := httptest.NewRecorder()
 
 	// Execute request through server
@@ -1280,23 +1308,37 @@ func TestServer_CORSMiddleware(t *testing.T) {
 		t.Error("X-Request-ID header not set by request logging middleware")
 	}
 
-	// Verify CORS headers were added by CORS middleware
-	corsOrigin := w.Header().Get("Access-Control-Allow-Origin")
-	if corsOrigin != "http://localhost:3000" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want %q", corsOrigin, "http://localhost:3000")
+	// Verify error response status
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 
-	// Verify response
-	if w.Code != http.StatusOK {
-		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	// Verify JSON error response
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %v, want application/json", contentType)
 	}
 
-	if w.Body.String() != "CORS test response" {
-		t.Errorf("Response body = %q, want %q", w.Body.String(), "CORS test response")
+	// Parse and verify error response structure
+	var response ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Errorf("Failed to decode JSON error response: %v", err)
+	}
+
+	if response.RequestID != requestID {
+		t.Errorf("Error response RequestID = %v, want %v", response.RequestID, requestID)
+	}
+
+	if response.Error.Code != ErrorCodeValidation {
+		t.Errorf("Error code = %v, want %v", response.Error.Code, ErrorCodeValidation)
+	}
+
+	if response.Message != "Invalid identifier provided" {
+		t.Errorf("Error message = %v, want 'Invalid identifier provided'", response.Message)
 	}
 }
 
-func TestServer_CORSMiddleware_Conditional(t *testing.T) {
+func TestServer_ErrorResponseMiddleware_PanicRecovery(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -1307,26 +1349,14 @@ func TestServer_CORSMiddleware_Conditional(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Configure CORS middleware without origins (should not be applied)
-	corsConfig := CORSConfig{
-		Enabled: false,
-		Origins: []string{}, // Empty origins
-	}
-
-	// Add middleware with conditional application
+	// Add middleware stack with error response handling
 	server.Middleware().
 		Use(RequestLoggingMiddleware()).
-		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)) // Should not apply
+		Use(ErrorResponseMiddleware())
 
-	// Set test handler
+	// Set test handler that panics
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := GetRequestID(r.Context())
-		if requestID == "" {
-			t.Error("Request ID not available in handler context")
-		}
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("no CORS test"))
+		panic("test panic for error recovery")
 	}))
 
 	// Start server
@@ -1340,35 +1370,45 @@ func TestServer_CORSMiddleware_Conditional(t *testing.T) {
 		}
 	}()
 
-	// Test request without CORS
+	// Test panic recovery
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Origin", "http://localhost:3000")
-
 	w := httptest.NewRecorder()
 
+	// Should not panic
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify request ID header was added by request logging middleware
-	if w.Header().Get("X-Request-ID") == "" {
-		t.Error("X-Request-ID header should be present from request logging")
+	// Verify request ID header was added
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Error("X-Request-ID header should be present")
 	}
 
-	// Verify NO CORS headers were added (middleware not applied)
-	if w.Header().Get("Access-Control-Allow-Origin") != "" {
-		t.Error("CORS headers should not be present when middleware not applied")
+	// Verify panic was recovered and returned as error response
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
 
-	// Verify response
-	if w.Code != http.StatusOK {
-		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	// Verify JSON error response
+	var response ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Errorf("Failed to decode JSON error response: %v", err)
 	}
 
-	if w.Body.String() != "no CORS test" {
-		t.Errorf("Response body = %q, want %q", w.Body.String(), "no CORS test")
+	if response.RequestID != requestID {
+		t.Errorf("Error response RequestID = %v, want %v", response.RequestID, requestID)
+	}
+
+	if response.Error.Code != ErrorCodeInternal {
+		t.Errorf("Error code = %v, want %v", response.Error.Code, ErrorCodeInternal)
+	}
+
+	// Verify panic details are not exposed in response
+	if strings.Contains(response.Message, "test panic") {
+		t.Error("Panic details should not be exposed in error response")
 	}
 }
 
-func TestServer_CORSMiddleware_Preflight(t *testing.T) {
+func TestServer_ErrorResponseMiddleware_WithCORS(t *testing.T) {
 	config := ServerConfig{
 		Host: "localhost",
 		Port: "0",
@@ -1379,7 +1419,7 @@ func TestServer_CORSMiddleware_Preflight(t *testing.T) {
 		t.Fatalf("NewServer() unexpected error: %v", err)
 	}
 
-	// Configure CORS middleware with origins
+	// Configure CORS
 	corsConfig := CORSConfig{
 		Enabled: true,
 		Origins: []string{"http://localhost:3000"},
@@ -1387,15 +1427,15 @@ func TestServer_CORSMiddleware_Preflight(t *testing.T) {
 		Headers: DefaultCORSHeaders,
 	}
 
-	// Add middleware chain
+	// Add middleware stack with all middleware types
 	server.Middleware().
 		Use(RequestLoggingMiddleware()).
-		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig))
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)).
+		Use(ErrorResponseMiddleware())
 
-	// Set test handler (should not be called for OPTIONS preflight)
+	// Set test handler that returns an error
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("Handler should not be called for preflight OPTIONS request")
-		w.WriteHeader(http.StatusOK)
+		HandleError(w, r, models.ErrInvalidName)
 	}))
 
 	// Start server
@@ -1409,92 +1449,35 @@ func TestServer_CORSMiddleware_Preflight(t *testing.T) {
 		}
 	}()
 
-	// Test preflight OPTIONS request
-	req := httptest.NewRequest("OPTIONS", "/test", nil)
+	// Test error response with CORS
+	req := httptest.NewRequest("GET", "/test", nil)
 	req.Header.Set("Origin", "http://localhost:3000")
-	req.Header.Set("Access-Control-Request-Method", "POST")
-	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
-
 	w := httptest.NewRecorder()
 
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify request ID header was added
+	// Verify all middleware applied correctly
 	if w.Header().Get("X-Request-ID") == "" {
-		t.Error("X-Request-ID header should be present")
+		t.Error("Request logging middleware should set request ID")
 	}
 
-	// Verify CORS preflight headers
 	if w.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
-		t.Error("CORS origin header should be set for preflight")
+		t.Error("CORS middleware should set CORS headers")
 	}
 
-	if w.Header().Get("Access-Control-Allow-Methods") == "" {
-		t.Error("CORS methods header should be set for preflight")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Error response middleware should set status %d, got %d", http.StatusBadRequest, w.Code)
 	}
 
-	if w.Header().Get("Access-Control-Allow-Headers") == "" {
-		t.Error("CORS headers header should be set for preflight")
+	// Verify error response structure
+	var response ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Errorf("Failed to decode JSON error response: %v", err)
 	}
 
-	// Verify preflight response status
-	if w.Code != http.StatusOK {
-		t.Errorf("Preflight response status = %d, want %d", w.Code, http.StatusOK)
+	if response.Error.Code != ErrorCodeValidation {
+		t.Errorf("Error code = %v, want %v", response.Error.Code, ErrorCodeValidation)
 	}
-}
-```
-
-### Step 6: Create Usage Example
-
-**File**: `examples/cors_usage.go` (optional example file)
-
-```go
-package main
-
-import (
-	"fmt"
-	"log/slog"
-	"net/http"
-	"os"
-
-	"cipher-hub/internal/server"
-)
-
-func main() {
-	// Configure structured logging
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-
-	config := server.ServerConfig{
-		Host: "localhost",
-		Port: "8080",
-	}
-
-	srv, err := server.NewServer(config)
-	if err != nil {
-		panic(err)
-	}
-
-	// Configure CORS with specific origins
-	corsConfig := server.CORSConfig{
-		Enabled: true,
-		Origins: []string{"http://localhost:3000", "https://app.example.com"},
-	}
-
-	// Configure middleware with conditional CORS
-	srv.Middleware().
-		Use(server.RequestLoggingMiddleware()).                                         // Always log requests
-		UseIf(len(corsConfig.Origins) > 0, server.CORSMiddlewareWithConfig(corsConfig)) // CORS when origins configured
-
-	// Set handler
-	srv.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := server.GetRequestID(r.Context())
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf("Hello! Request ID: %s", requestID)))
-	}))
-
-	fmt.Println("CORS middleware integration example compiled successfully")
-	fmt.Printf("Middleware count: %d\n", srv.Middleware().Count())
-	fmt.Printf("CORS origins configured: %v\n", corsConfig.Origins)
 }
 ```
 
@@ -1507,7 +1490,7 @@ func main() {
 # Navigate to project root
 cd cipher-hub/
 
-# Verify clean build with CORS middleware
+# Verify clean build with error response middleware
 go build ./...
 
 # Expected: No compilation errors
@@ -1515,199 +1498,149 @@ go build ./...
 
 ### Step 2: Unit Test Verification
 ```bash
-# Run CORS-specific tests
-go test ./internal/server -run "TestCORS" -v
+# Run core error classification tests in models package
+go test ./internal/models -run "TestClassifyError\|TestSanitizeErrorMessage\|TestIsValidationError\|TestIsInternalError\|TestErrorClassificationSecurity" -v
 
-# Expected: All CORS tests pass
-# Sample output:
-# === RUN   TestCORSConfig_LoadFromEnv
-# === RUN   TestCORSConfig_IsOriginAllowed
-# === RUN   TestCORSMiddleware
-# === RUN   TestCORSMiddlewareWithConfig
-# --- PASS: All CORS tests should pass
+# Run HTTP error response tests in server package
+go test ./internal/server -run "TestErrorResponse\|TestNewErrorResponse\|TestMapErrorToStatusCode\|TestWriteErrorResponse\|TestHandleError" -v
+
+# Expected: All error response and classification tests pass
 ```
 
-### Step 3: Server Integration Test Verification
+### Step 3: Security Test Verification
 ```bash
-# Run server integration tests with CORS
-go test ./internal/server -run "TestServer_CORS" -v
+# Run security-focused tests across both packages
+go test ./internal/models -run "TestErrorClassificationSecurity" -v
+go test ./internal/server -run "TestErrorResponseIntegrationWithModels" -v
 
-# Expected: All server integration tests pass
-# === RUN   TestServer_CORSMiddleware
-# === RUN   TestServer_CORSMiddleware_Conditional
-# === RUN   TestServer_CORSMiddleware_Preflight
-# --- PASS: All integration tests should pass
+# Expected: Security tests pass, no sensitive information exposed
 ```
 
-### Step 4: Complete Test Suite Verification
+### Step 4: Integration Test Verification
+```bash
+# Run server integration tests with error response middleware
+go test ./internal/server -run "TestServer_ErrorResponse" -v
+
+# Expected: All integration tests pass
+```
+
+### Step 5: Complete Test Suite Verification
 ```bash
 # Run all server tests to ensure no regressions
 go test ./internal/server -v
 
 # Expected: All existing and new tests pass
-# Verify CORS middleware doesn't break existing functionality
 ```
 
-### Step 5: Environment Variable Configuration Test
+### Step 6: Error Response Format Test
 ```bash
-# Test enhanced CORS configuration loading
-cat > test_cors_config.go << 'EOF'
+# Create test program to verify error response format and models integration
+cat > test_error_format.go << 'EOF'
 package main
 
 import (
+    "encoding/json"
     "fmt"
-    "os"
+    "cipher-hub/internal/models"
     "cipher-hub/internal/server"
 )
 
 func main() {
-    // Set comprehensive test environment variables
-    os.Setenv("CIPHER_HUB_CORS_ENABLED", "true")
-    os.Setenv("CIPHER_HUB_CORS_ORIGINS", "https://app.example.com,https://admin.example.com")
-    os.Setenv("CIPHER_HUB_CORS_METHODS", "GET, POST, PUT, DELETE")
-    os.Setenv("CIPHER_HUB_CORS_HEADERS", "Content-Type, Authorization, X-Custom-Header")
-    os.Setenv("CIPHER_HUB_CORS_MAX_AGE", "7200")
-    
-    config := server.CORSConfig{}
-    config.ApplyDefaults()
-    config.LoadFromEnv()
-    
-    // Validate configuration
-    if err := config.Validate(); err != nil {
-        fmt.Printf("Configuration validation failed: %v\n", err)
-        return
+    // Test various error types
+    errors := []error{
+        models.ErrInvalidID,
+        models.ErrInvalidName,
+        models.ErrInvalidAlgorithm,
+        fmt.Errorf("database connection failed"),
     }
     
-    fmt.Printf("CORS Enabled: %v\n", config.Enabled)
-    fmt.Printf("CORS Origins: %v\n", config.Origins)
-    fmt.Printf("CORS Methods: %s\n", config.Methods)
-    fmt.Printf("CORS Headers: %s\n", config.Headers)
-    fmt.Printf("CORS Max Age: %s\n", config.MaxAge)
-    
-    // Test case-insensitive origin validation
-    fmt.Printf("app.example.com (https) allowed: %v\n", config.IsOriginAllowed("https://app.example.com"))
-    fmt.Printf("APP.EXAMPLE.COM (HTTPS) allowed: %v\n", config.IsOriginAllowed("HTTPS://APP.EXAMPLE.COM"))
-    fmt.Printf("evil.com allowed: %v\n", config.IsOriginAllowed("https://evil.com"))
-    
-    // Test wildcard warning
-    fmt.Println("\nTesting wildcard configuration...")
-    wildcardConfig := server.CORSConfig{Origins: []string{"*"}}
-    fmt.Printf("Wildcard (*) allows anything: %v\n", wildcardConfig.IsOriginAllowed("https://anywhere.com"))
+    for _, err := range errors {
+        // Test core classification from models package
+        classification := models.ClassifyError(err)
+        message := models.SanitizeErrorMessage(err)
+        
+        fmt.Printf("Error: %v\n", err)
+        fmt.Printf("  Classification: %s/%s\n", classification.Code, classification.Category)
+        fmt.Printf("  Sanitized Message: %s\n", message)
+        
+        // Test HTTP response from server package
+        response := server.NewErrorResponse(err, "test-123")
+        jsonData, _ := json.MarshalIndent(response, "", "  ")
+        fmt.Printf("  HTTP Response:\n%s\n\n", jsonData)
+    }
 }
 EOF
 
-go run test_cors_config.go
-rm test_cors_config.go
+go run test_error_format.go
+rm test_error_format.go
 
-# Expected output:
-# CORS Enabled: true
-# CORS Origins: [https://app.example.com https://admin.example.com]
-# CORS Methods: GET, POST, PUT, DELETE
-# CORS Headers: Content-Type, Authorization, X-Custom-Header
-# CORS Max Age: 7200
-# app.example.com (https) allowed: true
-# APP.EXAMPLE.COM (HTTPS) allowed: true
-# evil.com allowed: false
-# 
-# Testing wildcard configuration...
-# Wildcard (*) allows anything: true
+# Expected: Well-formatted JSON error responses using models package classification
 ```
 
-### Step 6: CORS Integration Test
+### Step 7: Security Verification Test
 ```bash
-# Create enhanced integration test program
-cat > test_cors_integration.go << 'EOF'
+# Create test to verify no sensitive information leakage across both packages
+cat > test_error_security.go << 'EOF'
 package main
 
 import (
+    "encoding/json"
     "fmt"
-    "log/slog"
-    "net/http"
-    "os"
+    "strings"
+    "cipher-hub/internal/models"
     "cipher-hub/internal/server"
 )
 
 func main() {
-    // Configure structured logging
-    slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-    
-    config := server.ServerConfig{
-        Host: "localhost",
-        Port: "8080",
+    // Test sensitive errors
+    sensitiveErrors := []error{
+        fmt.Errorf("database password authentication failed for user admin"),
+        fmt.Errorf("failed to read /etc/passwd"),
+        fmt.Errorf("SQL injection: DROP TABLE users"),
+        fmt.Errorf("API key leaked: sk-1234567890abcdef"),
     }
     
-    srv, err := server.NewServer(config)
-    if err != nil {
-        panic(err)
+    for _, err := range sensitiveErrors {
+        // Test models package sanitization
+        message := models.SanitizeErrorMessage(err)
+        classification := models.ClassifyError(err)
+        
+        // Test server package HTTP response
+        response := server.NewErrorResponse(err, "test-123")
+        jsonData, _ := json.Marshal(response)
+        jsonString := string(jsonData)
+        
+        // Check for sensitive patterns
+        sensitivePatterns := []string{
+            "password", "admin", "/etc/", "DROP TABLE", "sk-", "API key",
+        }
+        
+        leaked := false
+        for _, pattern := range sensitivePatterns {
+            if strings.Contains(message, pattern) || strings.Contains(jsonString, pattern) {
+                fmt.Printf("SECURITY ISSUE: Pattern %q found in response\n", pattern)
+                leaked = true
+            }
+        }
+        
+        if !leaked {
+            fmt.Printf("✓ Safe: %v -> %s (%s)\n", err, message, classification.Code)
+        }
     }
-    
-    // Configure enhanced CORS with specific origins and custom settings
-    corsConfig := server.CORSConfig{
-        Enabled: true,
-        Origins: []string{"https://app.example.com", "https://admin.example.com"},
-        Methods: "GET, POST, PUT, DELETE, OPTIONS",
-        Headers: "Content-Type, Authorization, X-Request-ID, X-Custom-Header",
-        MaxAge:  "7200",
-    }
-    
-    // Validate CORS configuration
-    if err := corsConfig.Validate(); err != nil {
-        fmt.Printf("CORS configuration validation failed: %v\n", err)
-        return
-    }
-    
-    // Configure middleware with conditional CORS
-    srv.Middleware().
-        Use(server.RequestLoggingMiddleware()).
-        UseIf(len(corsConfig.Origins) > 0, server.CORSMiddlewareWithConfig(corsConfig))
-    
-    // Set handler
-    srv.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        requestID := server.GetRequestID(r.Context())
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte(fmt.Sprintf("Hello! Request ID: %s", requestID)))
-    }))
-    
-    fmt.Println("Enhanced CORS middleware integration test compiled successfully")
-    fmt.Printf("Middleware count: %d\n", srv.Middleware().Count())
-    fmt.Printf("CORS enabled with origins: %v\n", corsConfig.Origins)
-    fmt.Printf("CORS methods: %s\n", corsConfig.Methods)
-    fmt.Printf("CORS headers: %s\n", corsConfig.Headers)
-    fmt.Printf("CORS max age: %s seconds\n", corsConfig.MaxAge)
-    
-    // Test case-insensitive origin matching
-    fmt.Printf("\nCase-insensitive origin matching:")
-    fmt.Printf("\n  https://app.example.com allowed: %v", corsConfig.IsOriginAllowed("https://app.example.com"))
-    fmt.Printf("\n  HTTPS://APP.EXAMPLE.COM allowed: %v", corsConfig.IsOriginAllowed("HTTPS://APP.EXAMPLE.COM"))
 }
 EOF
 
-go run test_cors_integration.go
-rm test_cors_integration.go
+go run test_error_security.go
+rm test_error_security.go
 
-# Expected: "Enhanced CORS middleware integration test compiled successfully"
-# Expected: "Middleware count: 2"
-# Expected: "CORS enabled with origins: [https://app.example.com https://admin.example.com]"
-# Expected: "CORS methods: GET, POST, PUT, DELETE, OPTIONS"
-# Expected: "CORS headers: Content-Type, Authorization, X-Request-ID, X-Custom-Header"
-# Expected: "CORS max age: 7200 seconds"
-# Expected: Case-insensitive origin matching results
+# Expected: All errors should be sanitized, no sensitive patterns exposed
 ```
 
-### Step 7: Code Quality Verification
+### Step 8: Code Quality Verification
 ```bash
 # Format and lint checks
 go fmt ./...
 go vet ./...
 
 # Expected: No issues reported
-```
-
-### Step 8: Documentation Verification
-```bash
-# Verify go doc generates proper documentation
-go doc -all ./internal/server | grep -A 10 "func CORSMiddleware"
-go doc -all ./internal/server | grep -A 5 "type CORSConfig"
-
-# Expected: Complete documentation for CORS functions and types
 ```

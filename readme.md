@@ -8,7 +8,8 @@
 - **Target**: 2.1 (Basic Server Setup)
 - **Task**: 2.1.2 (Middleware Infrastructure)
 - **Step**: Step 2.1.2.4 (Create error response formatting middleware)
-- **Blockers**: None
+- **Blockers**: Separation of concerns architecture review required before next development session
+    - Execute [`roadblock-separation-of-concerns.md`](./.prompts/roadblock-separation-of-concerns.md) to generate the resolution guide.
 
 See [`roadmap.md`](./roadmap.md) for detailed development roadmap and current implementation details.
 
