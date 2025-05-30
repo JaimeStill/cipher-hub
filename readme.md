@@ -7,8 +7,7 @@
 - **Phase**: 2 (HTTP Server Infrastructure)
 - **Target**: 2.1 (Basic Server Setup)
 - **Task**: 2.1.2 (Middleware Infrastructure)
-- **Task**: Step 2.1.2.4 (Error Formatting)
-- **Step**: 
+- **Step**: Step 2.1.2.3 (Add CORS handling middleware)
 - **Blockers**: None
 
 See [`roadmap.md`](./roadmap.md) for detailed development roadmap and current implementation details.

@@ -1,6 +1,6 @@
 # Cipher Hub - Implementation Style Guide
 
-**Version**: 1.7  
+**Version**: 1.8  
 **Last Updated**: Current Session
 
 This style guide establishes consistent development practices for the Cipher Hub project. All code contributions must adhere to these standards to maintain security, quality, and maintainability.
@@ -110,9 +110,9 @@ import (
 type contextKey string
 
 const (
-    loggerCtxKey    contextKey = "logger"
-    requestIDCtxKey contextKey = "request_id"
-    userCtxKey      contextKey = "user"
+    loggerCtxKey     contextKey = "logger"
+    requestIDCtxKey  contextKey = "request_id"
+    userCtxKey       contextKey = "user"
 )
 
 // Helper functions for type safety
@@ -125,6 +125,18 @@ func GetLogger(ctx context.Context) *slog.Logger {
         return logger
     }
     return slog.Default() // Safe fallback
+}
+
+// Request ID context operations
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+    return context.WithValue(ctx, requestIDCtxKey, requestID)
+}
+
+func GetRequestID(ctx context.Context) string {
+    if requestID, ok := ctx.Value(requestIDCtxKey).(string); ok {
+        return requestID
+    }
+    return ""
 }
 
 // Incorrect: String keys are error-prone
@@ -426,7 +438,7 @@ import (
 
 // Middleware defines the standard middleware function signature.
 // A middleware function takes an http.Handler and returns an http.Handler,
-// allowing for request/response processing before and after the wrapped handler.
+// allowing for request / response processing before and after the wrapped handler.
 //
 // Example usage:
 //
@@ -489,8 +501,7 @@ func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
 // Environment-based middleware configuration
 func setupMiddleware(server *Server, config AppConfig) {
     server.Middleware().
-        Use(RequestIDMiddleware()).              // Always generate request IDs
-        Use(RequestLoggingMiddleware()).         // Always log requests
+        Use(RequestLoggingMiddleware()).         // Always generate request IDs and log requests
         UseIf(config.EnableCORS, CORSMiddleware(config.CORSOrigins)). // Environment-specific CORS
         UseIf(config.IsProduction, HSTSMiddleware()).                 // HSTS only in production
         UseIf(config.EnableAuth, AuthMiddleware()).                   // Auth when enabled
@@ -538,21 +549,105 @@ import (
     "fmt"
     "log/slog"
     "net/http"
+    "os"
+    "strings"
     "time"
+
+    "cipher-hub/internal/config"
 )
+
+// Request logging constants
+const (
+    // Request ID generation
+    RequestIDBytes     = 8                  // 8 bytes for crypto/rand generation
+    RequestIDHexLength = RequestIDBytes * 2 // 16 characters hex-encoded
+
+    // Error handling
+    RequestLoggingErrorPrefix = "RequestLogging"
+
+    // Log field names for consistency
+    LogFieldRequestID     = "request_id"
+    LogFieldMethod        = "method"
+    LogFieldPath          = "path"
+    LogFieldStatusCode    = "status_code"
+    LogFieldDurationMS    = "duration_ms"
+    LogFieldBytesWritten  = "bytes_written"
+    LogFieldRemoteAddr    = "remote_addr"
+    LogFieldUserAgent     = "user_agent"
+    LogFieldContentLength = "content_length"
+)
+
+// Sensitive headers that should never be logged
+var SensitiveHeaders = map[string]bool{
+    "authorization":       true,
+    "cookie":              true,
+    "x-api-key":           true,
+    "x-auth-token":        true,
+    "proxy-authorization": true,
+}
 
 // Secure request ID generation
 func generateRequestID() (string, error) {
-    bytes := make([]byte, 8)
+    bytes := make([]byte, RequestIDBytes)
     if _, err := rand.Read(bytes); err != nil {
-        return "", fmt.Errorf("failed to generate request ID: %w", err)
+        return "", fmt.Errorf("%s: failed to generate request ID: %w",
+            RequestLoggingErrorPrefix, err)
     }
     return hex.EncodeToString(bytes), nil
 }
 
+// RequestLoggingConfig holds configuration for request logging middleware
+type RequestLoggingConfig struct {
+    Enabled        bool   `json:"enabled"`
+    Level          string `json:"level"`           // "debug", "info", "warn", "error"
+    Format         string `json:"format"`          // "json" or "text"
+    IncludeHeaders bool   `json:"include_headers"` // Include non-sensitive headers
+}
+
+// LoadFromEnv populates logging configuration from environment variables
+func (c *RequestLoggingConfig) LoadFromEnv() {
+    if enabled := os.Getenv(config.EnvLoggingEnabled); enabled != "" {
+        c.Enabled = strings.ToLower(enabled) == "true"
+    }
+    if level := os.Getenv(config.EnvLogLevel); level != "" {
+        c.Level = strings.ToLower(level)
+    }
+    if format := os.Getenv(config.EnvLogFormat); format != "" {
+        c.Format = strings.ToLower(format)
+    }
+    if headers := os.Getenv(config.EnvLogIncludeHeaders); headers != "" {
+        c.IncludeHeaders = strings.ToLower(headers) == "true"
+    }
+}
+
+// ApplyDefaults sets secure default values for logging configuration
+func (c *RequestLoggingConfig) ApplyDefaults() {
+    if c.Level == "" {
+        c.Level = "info"
+    }
+    if c.Format == "" {
+        c.Format = "json"
+    }
+    // Enabled defaults to true, IncludeHeaders defaults to false
+    if !c.Enabled {
+        c.Enabled = true
+    }
+}
+
 // Request logging middleware with structured logging
 func RequestLoggingMiddleware() Middleware {
+    config := RequestLoggingConfig{}
+    config.ApplyDefaults()
+    config.LoadFromEnv()
+    return RequestLoggingMiddlewareWithConfig(config)
+}
+
+func RequestLoggingMiddlewareWithConfig(config RequestLoggingConfig) Middleware {
     return func(next http.Handler) http.Handler {
+        if !config.Enabled {
+            return next
+        }
+
         return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
             start := time.Now()
             
@@ -565,35 +660,56 @@ func RequestLoggingMiddleware() Middleware {
             }
             
             // Add request ID to context
-            ctx := context.WithValue(r.Context(), requestIDCtxKey, requestID)
+            ctx := WithRequestID(r.Context(), requestID)
             r = r.WithContext(ctx)
             
             // Add request ID to response headers
             w.Header().Set("X-Request-ID", requestID)
             
-            // Log request start
-            slog.Info("Request started",
-                "request_id", requestID,
-                "method", r.Method,
-                "path", r.URL.Path,
-                "remote_addr", r.RemoteAddr,
-                "user_agent", r.UserAgent())
+            // Check log level before expensive operations
+            if slog.Default().Enabled(context.Background(), slog.LevelInfo) {
+                // Build log fields using consistent field names
+                logFields := []any{
+                    LogFieldRequestID, requestID,
+                    LogFieldMethod, r.Method,
+                    LogFieldPath, r.URL.Path,
+                    LogFieldRemoteAddr, r.RemoteAddr,
+                    LogFieldUserAgent, r.UserAgent(),
+                    LogFieldContentLength, r.ContentLength,
+                }
+
+                if config.IncludeHeaders {
+                    headers := filterSensitiveHeaders(r.Header)
+                    if len(headers) > 0 {
+                        logFields = append(logFields, "headers", headers)
+                    }
+                }
+
+                // Log request start with structured data
+                slog.Info("Request started", logFields...)
+            }
             
             // Wrap ResponseWriter to capture status code
-            wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+            wrapped := newResponseWriter(w)
             
             // Call next handler
             next.ServeHTTP(wrapped, r)
             
-            // Log request completion
+            // Calculate request duration
             duration := time.Since(start)
-            slog.Info("Request completed",
-                "request_id", requestID,
-                "method", r.Method,
-                "path", r.URL.Path,
-                "status_code", wrapped.statusCode,
-                "duration_ms", duration.Milliseconds(),
-                "bytes_written", wrapped.bytesWritten)
+            
+            // Check log level before completion logging
+            if slog.Default().Enabled(context.Background(), slog.LevelInfo) {
+                // Log request completion with performance metrics
+                slog.Info("Request completed",
+                    LogFieldRequestID, requestID,
+                    LogFieldMethod, r.Method,
+                    LogFieldPath, r.URL.Path,
+                    LogFieldStatusCode, wrapped.StatusCode(),
+                    LogFieldDurationMS, duration.Milliseconds(),
+                    LogFieldBytesWritten, wrapped.BytesWritten(),
+                    LogFieldRemoteAddr, r.RemoteAddr)
+            }
         })
     }
 }
@@ -605,6 +721,14 @@ type responseWriter struct {
     bytesWritten int64
 }
 
+func newResponseWriter(w http.ResponseWriter) *responseWriter {
+    return &responseWriter{
+        ResponseWriter: w,
+        statusCode:     http.StatusOK, // Default status code
+        bytesWritten:   0,
+    }
+}
+
 func (rw *responseWriter) WriteHeader(code int) {
     rw.statusCode = code
     rw.ResponseWriter.WriteHeader(code)
@@ -614,6 +738,26 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
     n, err := rw.ResponseWriter.Write(b)
     rw.bytesWritten += int64(n)
     return n, err
+}
+
+func (rw *responseWriter) StatusCode() int {
+    return rw.statusCode
+}
+
+func (rw *responseWriter) BytesWritten() int64 {
+    return rw.bytesWritten
+}
+
+// filterSensitiveHeaders removes sensitive headers from logging
+func filterSensitiveHeaders(headers http.Header) map[string]string {
+    filtered := make(map[string]string)
+    for key, values := range headers {
+        lowerKey := strings.ToLower(key)
+        if !SensitiveHeaders[lowerKey] {
+            filtered[key] = strings.Join(values, ", ")
+        }
+    }
+    return filtered
 }
 ```
 
@@ -822,6 +966,145 @@ shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout
 
 ---
 
+## Centralized Configuration Management
+
+### Environment Variable Architecture
+
+#### Centralized Constants Pattern
+```go
+// internal/config/env.go - Centralized environment variable definitions
+package config
+
+// Environment variable names for Cipher Hub
+const (
+    // Server configuration
+    EnvHost            = "CIPHER_HUB_HOST"
+    EnvPort            = "CIPHER_HUB_PORT"
+    EnvReadTimeout     = "CIPHER_HUB_READ_TIMEOUT"
+    EnvWriteTimeout    = "CIPHER_HUB_WRITE_TIMEOUT"
+    EnvIdleTimeout     = "CIPHER_HUB_IDLE_TIMEOUT"
+    EnvShutdownTimeout = "CIPHER_HUB_SHUTDOWN_TIMEOUT"
+
+    // Logging configuration
+    EnvLoggingEnabled    = "CIPHER_HUB_LOGGING_ENABLED"
+    EnvLogLevel          = "CIPHER_HUB_LOG_LEVEL"
+    EnvLogFormat         = "CIPHER_HUB_LOG_FORMAT"
+    EnvLogIncludeHeaders = "CIPHER_HUB_LOG_INCLUDE_HEADERS"
+
+    // Security configuration
+    EnvCORSOrigins = "CIPHER_HUB_CORS_ORIGINS"
+    EnvTLSCertFile = "CIPHER_HUB_TLS_CERT_FILE"
+    EnvTLSKeyFile  = "CIPHER_HUB_TLS_KEY_FILE"
+
+    // Application configuration
+    EnvEnvironment = "CIPHER_HUB_ENVIRONMENT"
+    EnvDatabaseURL = "CIPHER_HUB_DATABASE_URL"
+)
+```
+
+#### Type-Safe Helper Functions
+```go
+// Helper functions for type-safe environment variable access
+func GetEnvString(key, defaultValue string) string {
+    if value := os.Getenv(key); value != "" {
+        return strings.TrimSpace(value)
+    }
+    return defaultValue
+}
+
+func GetEnvBool(key string, defaultValue bool) bool {
+    if value := os.Getenv(key); value != "" {
+        return strings.ToLower(strings.TrimSpace(value)) == "true"
+    }
+    return defaultValue
+}
+
+func GetEnvDuration(key string, defaultValue time.Duration) time.Duration {
+    if value := os.Getenv(key); value != "" {
+        if duration, err := time.ParseDuration(strings.TrimSpace(value)); err == nil {
+            return duration
+        }
+    }
+    return defaultValue
+}
+
+func GetEnvInt(key string, defaultValue int) int {
+    if value := os.Getenv(key); value != "" {
+        if intValue, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+            return intValue
+        }
+    }
+    return defaultValue
+}
+
+func GetEnvStringSlice(key, separator string, defaultValue []string) []string {
+    if value := os.Getenv(key); value != "" {
+        items := strings.Split(value, separator)
+        result := make([]string, 0, len(items))
+        for _, item := range items {
+            if trimmed := strings.TrimSpace(item); trimmed != "" {
+                result = append(result, trimmed)
+            }
+        }
+        return result
+    }
+    return defaultValue
+}
+```
+
+#### Configuration Loading Pattern
+```go
+// Standard configuration loading pattern
+type RequestLoggingConfig struct {
+    Enabled        bool   `json:"enabled"`
+    Level          string `json:"level"`
+    Format         string `json:"format"`
+    IncludeHeaders bool   `json:"include_headers"`
+}
+
+// LoadFromEnv populates configuration from environment variables
+func (c *RequestLoggingConfig) LoadFromEnv() {
+    c.Enabled = GetEnvBool(EnvLoggingEnabled, c.Enabled)
+    c.Level = GetEnvString(EnvLogLevel, c.Level)
+    c.Format = GetEnvString(EnvLogFormat, c.Format)
+    c.IncludeHeaders = GetEnvBool(EnvLogIncludeHeaders, c.IncludeHeaders)
+}
+
+// ApplyDefaults sets secure default values
+func (c *RequestLoggingConfig) ApplyDefaults() {
+    if c.Level == "" {
+        c.Level = "info"
+    }
+    if c.Format == "" {
+        c.Format = "json"
+    }
+    if !c.Enabled {
+        c.Enabled = true
+    }
+}
+
+// Usage pattern
+func NewRequestLoggingMiddleware() Middleware {
+    config := RequestLoggingConfig{}
+    config.ApplyDefaults()  // Apply secure defaults first
+    config.LoadFromEnv()    // Override with environment variables
+    return RequestLoggingMiddlewareWithConfig(config)
+}
+```
+
+#### Environment Variable Naming Convention
+Use consistent naming patterns for environment variables:
+- **Prefix**: All variables start with `CIPHER_HUB_`
+- **Format**: `CIPHER_HUB_<COMPONENT>_<SETTING>`
+- **Case**: Use SCREAMING_SNAKE_CASE for environment variables
+- **Examples**: 
+  - `CIPHER_HUB_HOST=localhost`
+  - `CIPHER_HUB_READ_TIMEOUT=30s`
+  - `CIPHER_HUB_LOGGING_ENABLED=true`
+  - `CIPHER_HUB_CORS_ORIGINS=http://localhost:3000,https://app.example.com`
+
+---
+
 ## Security-First Development
 
 ### Input Validation Standards
@@ -957,10 +1240,11 @@ type CryptoKey struct {
 ```go
 // Use typed error prefixes for consistent categorization
 const (
-    ServerConfigErrorPrefix = "ServerConfig"
-    ServerErrorPrefix      = "Server"
-    HandlerErrorPrefix     = "Handler"
-    StorageErrorPrefix     = "Storage"
+    ServerConfigErrorPrefix      = "ServerConfig"
+    ServerErrorPrefix           = "Server"
+    RequestLoggingErrorPrefix   = "RequestLogging"
+    HandlerErrorPrefix          = "Handler"
+    StorageErrorPrefix          = "Storage"
 )
 
 // Apply consistently in error handling
@@ -969,6 +1253,15 @@ func (c *ServerConfig) Validate() error {
         return fmt.Errorf("%s: %w", ServerConfigErrorPrefix, err)
     }
     return nil
+}
+
+func generateRequestID() (string, error) {
+    bytes := make([]byte, RequestIDBytes)
+    if _, err := rand.Read(bytes); err != nil {
+        return "", fmt.Errorf("%s: failed to generate request ID: %w", 
+            RequestLoggingErrorPrefix, err)
+    }
+    return hex.EncodeToString(bytes), nil
 }
 ```
 
@@ -1032,168 +1325,70 @@ const (
 )
 ```
 
-### Environment-Based Configuration
+### Request Logging Security
 
-#### General Configuration Pattern
-Configuration should be environment-driven with secure defaults and comprehensive validation. All configuration parameters should support environment variable loading with fallback to default values.
-
+#### Sensitive Header Filtering
 ```go
-import (
-    "fmt"
-    "net/url"
-    "os"
-    "strings"
-    "time"
-)
-
-// Comprehensive configuration structure
-type ServerConfig struct {
-    // Network configuration
-    Host        string        `json:"host"`
-    Port        string        `json:"port"`
-    
-    // Timeout configurations
-    ReadTimeout     time.Duration `json:"read_timeout"`
-    WriteTimeout    time.Duration `json:"write_timeout"`
-    IdleTimeout     time.Duration `json:"idle_timeout"`
-    ShutdownTimeout time.Duration `json:"shutdown_timeout"`
-    
-    // Security configuration
-    CORSOrigins     []string `json:"cors_origins"`
-    TLSCertFile     string   `json:"tls_cert_file"`
-    TLSKeyFile      string   `json:"tls_key_file"`
-    
-    // Application configuration
-    Environment     string `json:"environment"`
-    LogLevel        string `json:"log_level"`
-    DatabaseURL     string `json:"database_url"`
+// Comprehensive sensitive header filtering
+var SensitiveHeaders = map[string]bool{
+    "authorization":       true,
+    "cookie":              true,
+    "x-api-key":           true,
+    "x-auth-token":        true,
+    "proxy-authorization": true,
 }
 
-// LoadFromEnv populates configuration from environment variables
-func (c *ServerConfig) LoadFromEnv() error {
-    // Network configuration
-    if host := os.Getenv("CIPHER_HUB_HOST"); host != "" {
-        c.Host = host
-    }
-    if port := os.Getenv("CIPHER_HUB_PORT"); port != "" {
-        c.Port = port
-    }
-    
-    // Timeout configuration with parsing
-    if readTimeout := os.Getenv("CIPHER_HUB_READ_TIMEOUT"); readTimeout != "" {
-        if duration, err := time.ParseDuration(readTimeout); err == nil {
-            c.ReadTimeout = duration
+func filterSensitiveHeaders(headers http.Header) map[string]string {
+    filtered := make(map[string]string)
+    for key, values := range headers {
+        lowerKey := strings.ToLower(key)
+        if !SensitiveHeaders[lowerKey] {
+            filtered[key] = strings.Join(values, ", ")
         }
     }
-    if writeTimeout := os.Getenv("CIPHER_HUB_WRITE_TIMEOUT"); writeTimeout != "" {
-        if duration, err := time.ParseDuration(writeTimeout); err == nil {
-            c.WriteTimeout = duration
-        }
-    }
-    
-    // Security configuration
-    if corsOriginsEnv := os.Getenv("CIPHER_HUB_CORS_ORIGINS"); corsOriginsEnv != "" {
-        c.CORSOrigins = parseCommaSeparatedList(corsOriginsEnv)
-    }
-    if certFile := os.Getenv("CIPHER_HUB_TLS_CERT_FILE"); certFile != "" {
-        c.TLSCertFile = certFile
-    }
-    if keyFile := os.Getenv("CIPHER_HUB_TLS_KEY_FILE"); keyFile != "" {
-        c.TLSKeyFile = keyFile
-    }
-    
-    // Application configuration
-    if env := os.Getenv("CIPHER_HUB_ENVIRONMENT"); env != "" {
-        c.Environment = env
-    }
-    if logLevel := os.Getenv("CIPHER_HUB_LOG_LEVEL"); logLevel != "" {
-        c.LogLevel = logLevel
-    }
-    if dbURL := os.Getenv("CIPHER_HUB_DATABASE_URL"); dbURL != "" {
-        c.DatabaseURL = dbURL
-    }
-    
-    return c.validateEnvironmentConfig()
-}
-
-// Helper function for parsing comma-separated lists
-func parseCommaSeparatedList(value string) []string {
-    items := strings.Split(value, ",")
-    result := make([]string, 0, len(items))
-    for _, item := range items {
-        if trimmed := strings.TrimSpace(item); trimmed != "" {
-            result = append(result, trimmed)
-        }
-    }
-    return result
-}
-
-// Validate environment-specific configuration
-func (c *ServerConfig) validateEnvironmentConfig() error {
-    // Validate CORS origins
-    for _, origin := range c.CORSOrigins {
-        if _, err := url.Parse(origin); err != nil {
-            return fmt.Errorf("invalid CORS origin format: %s", origin)
-        }
-    }
-    
-    // Validate TLS configuration
-    if (c.TLSCertFile != "") != (c.TLSKeyFile != "") {
-        return fmt.Errorf("both TLS cert and key files must be provided")
-    }
-    
-    // Validate environment
-    validEnvironments := []string{"development", "staging", "production"}
-    if c.Environment != "" && !contains(validEnvironments, c.Environment) {
-        return fmt.Errorf("invalid environment: %s", c.Environment)
-    }
-    
-    // Validate log level
-    validLogLevels := []string{"debug", "info", "warn", "error"}
-    if c.LogLevel != "" && !contains(validLogLevels, c.LogLevel) {
-        return fmt.Errorf("invalid log level: %s", c.LogLevel)
-    }
-    
-    return nil
-}
-
-// Helper function for slice contains check
-func contains(slice []string, item string) bool {
-    for _, s := range slice {
-        if s == item {
-            return true
-        }
-    }
-    return false
+    return filtered
 }
 ```
 
-#### Environment Variable Naming Convention
-Use consistent naming patterns for environment variables:
-- **Prefix**: All variables start with `CIPHER_HUB_`
-- **Format**: `CIPHER_HUB_<COMPONENT>_<SETTING>`
-- **Case**: Use SCREAMING_SNAKE_CASE for environment variables
-- **Examples**: 
-  - `CIPHER_HUB_HOST=localhost`
-  - `CIPHER_HUB_READ_TIMEOUT=30s`
-  - `CIPHER_HUB_CORS_ORIGINS=http://localhost:3000,https://app.example.com`
-
-#### Configuration Usage Pattern
+#### Secure Request ID Generation
 ```go
-// Initialize configuration with environment loading
-func NewServerFromEnv() (*Server, error) {
-    config := ServerConfig{}
-    
-    // Apply secure defaults first
-    config.ApplyDefaults()
-    
-    // Load from environment variables
-    if err := config.LoadFromEnv(); err != nil {
-        return nil, fmt.Errorf("failed to load environment config: %w", err)
+// Cryptographically secure request ID generation
+func generateRequestID() (string, error) {
+    bytes := make([]byte, RequestIDBytes)
+    if _, err := rand.Read(bytes); err != nil {
+        return "", fmt.Errorf("%s: failed to generate request ID: %w", 
+            RequestLoggingErrorPrefix, err)
     }
-    
-    // Create server with loaded configuration
-    return NewServer(config)
+    return hex.EncodeToString(bytes), nil
+}
+
+// Constants for maintainability
+const (
+    RequestIDBytes     = 8                  // 8 bytes for crypto/rand generation
+    RequestIDHexLength = RequestIDBytes * 2 // 16 characters hex-encoded
+)
+```
+
+#### Type-Safe Context Operations
+```go
+// Type-safe context key usage
+type contextKey string
+
+const (
+    requestIDCtxKey contextKey = "request_id"
+)
+
+// WithRequestID adds a request ID to the context using a typed context key
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+    return context.WithValue(ctx, requestIDCtxKey, requestID)
+}
+
+// GetRequestID retrieves the request ID from context with type safety
+func GetRequestID(ctx context.Context) string {
+    if requestID, ok := ctx.Value(requestIDCtxKey).(string); ok {
+        return requestID
+    }
+    return ""
 }
 ```
 
@@ -1210,6 +1405,7 @@ func NewServerFromEnv() (*Server, error) {
 - **Thread Safety Tests**: Test concurrent access patterns where applicable
 - **Shutdown Tests**: Test graceful shutdown scenarios and resource cleanup
 - **Middleware Tests**: Test middleware composition, execution order, and conditional application
+- **Request Logging Tests**: Test correlation ID generation, context propagation, and security
 
 ### Security-Focused Testing Patterns
 ```go
@@ -1288,6 +1484,93 @@ func TestServerConfig_Validate(t *testing.T) {
 }
 ```
 
+### Request Logging Testing Patterns
+```go
+func TestGenerateRequestID(t *testing.T) {
+    tests := []struct {
+        name string
+        runs int
+    }{
+        {
+            name: "single generation",
+            runs: 1,
+        },
+        {
+            name: "multiple generations for uniqueness",
+            runs: 100,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            ids := make(map[string]bool)
+
+            for i := 0; i < tt.runs; i++ {
+                id, err := generateRequestID()
+                if err != nil {
+                    t.Fatalf("generateRequestID() error = %v", err)
+                }
+
+                // Verify ID format (16 character hex string)
+                if len(id) != RequestIDHexLength {
+                    t.Errorf("generateRequestID() ID length = %d, want %d", len(id), RequestIDHexLength)
+                }
+
+                // Verify hex format
+                for _, char := range id {
+                    if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+                        t.Errorf("generateRequestID() invalid hex character: %c", char)
+                    }
+                }
+
+                // Check for duplicates in multiple runs
+                if tt.runs > 1 {
+                    if ids[id] {
+                        t.Errorf("generateRequestID() duplicate ID generated: %s", id)
+                    }
+                    ids[id] = true
+                }
+            }
+        })
+    }
+}
+
+func TestFilterSensitiveHeaders(t *testing.T) {
+    headers := http.Header{
+        "Content-Type":  []string{"application/json"},
+        "Authorization": []string{"Bearer token123"},
+        "X-Api-Key":     []string{"secret123"},
+        "User-Agent":    []string{"test-client"},
+        "Cookie":        []string{"session=abc123"},
+        "X-Request-ID":  []string{"req-123"},
+    }
+
+    filtered := filterSensitiveHeaders(headers)
+
+    // Should include non-sensitive headers
+    if filtered["Content-Type"] != "application/json" {
+        t.Error("Content-Type should be included")
+    }
+    if filtered["User-Agent"] != "test-client" {
+        t.Error("User-Agent should be included")
+    }
+    if filtered["X-Request-ID"] != "req-123" {
+        t.Error("X-Request-ID should be included")
+    }
+
+    // Should exclude sensitive headers
+    if _, exists := filtered["Authorization"]; exists {
+        t.Error("Authorization should be filtered out")
+    }
+    if _, exists := filtered["X-Api-Key"]; exists {
+        t.Error("X-Api-Key should be filtered out")
+    }
+    if _, exists := filtered["Cookie"]; exists {
+        t.Error("Cookie should be filtered out")
+    }
+}
+```
+
 ### Middleware Testing Patterns
 ```go
 func TestMiddlewareStack_Apply_Order(t *testing.T) {
@@ -1357,68 +1640,67 @@ func TestMiddlewareStack_Apply_Order(t *testing.T) {
     }
 }
 
-func TestMiddlewareStack_UseIf(t *testing.T) {
-    tests := []struct {
-        name           string
-        condition      bool
-        expectedCount  int
-        expectHeader   bool
-    }{
-        {
-            name:          "condition true",
-            condition:     true,
-            expectedCount: 1,
-            expectHeader:  true,
-        },
-        {
-            name:          "condition false",
-            condition:     false,
-            expectedCount: 0,
-            expectHeader:  false,
-        },
+func TestRequestLoggingMiddleware_HighConcurrency(t *testing.T) {
+    config := RequestLoggingConfig{
+        Enabled: true,
+        Level:   "info",
+        Format:  "json",
     }
+    middleware := RequestLoggingMiddlewareWithConfig(config)
 
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            stack := NewMiddlewareStack()
+    handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        requestID := GetRequestID(r.Context())
+        if requestID == "" {
+            t.Error("Request ID should be available")
+        }
+        w.WriteHeader(http.StatusOK)
+    })
 
-            middleware := func(next http.Handler) http.Handler {
-                return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                    w.Header().Set("X-Conditional", "applied")
-                    next.ServeHTTP(w, r)
-                })
-            }
+    wrappedHandler := middleware(handler)
 
-            // Test conditional addition
-            result := stack.UseIf(tt.condition, middleware)
-
-            // Verify chaining
-            if result != stack {
-                t.Error("UseIf() should return same instance for chaining")
-            }
-
-            // Verify count
-            if stack.Count() != tt.expectedCount {
-                t.Errorf("Expected %d middleware, got %d", tt.expectedCount, stack.Count())
-            }
-
-            // Test application
-            handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                w.WriteHeader(http.StatusOK)
-            })
-
-            finalHandler := stack.Apply(handler)
+    // Test concurrent request ID generation
+    const concurrency = 100
+    requestIDs := make(chan string, concurrency)
+    
+    var wg sync.WaitGroup
+    for i := 0; i < concurrency; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            
             req := httptest.NewRequest("GET", "/test", nil)
             w := httptest.NewRecorder()
-
-            finalHandler.ServeHTTP(w, req)
-
-            // Verify header presence
-            hasHeader := w.Header().Get("X-Conditional") == "applied"
-            if hasHeader != tt.expectHeader {
-                t.Errorf("Expected header present: %v, got: %v", tt.expectHeader, hasHeader)
+            
+            wrappedHandler.ServeHTTP(w, req)
+            
+            requestID := w.Header().Get("X-Request-ID")
+            if requestID != "" {
+                requestIDs <- requestID
             }
-        })
+        }()
+    }
+    
+    wg.Wait()
+    close(requestIDs)
+
+    // Verify all request IDs are unique
+    seen := make(map[string]bool)
+    count := 0
+    for requestID := range requestIDs {
+        if seen[requestID] {
+            t.Errorf("Duplicate request ID generated: %s", requestID)
+        }
+        seen[requestID] = true
+        count++
+        
+        // Verify format
+        if len(requestID) != RequestIDHexLength {
+            t.Errorf("Invalid request ID length: %d, want %d", len(requestID), RequestIDHexLength)
+        }
+    }
+    
+    if count != concurrency {
+        t.Errorf("Expected %d unique request IDs, got %d", concurrency, count)
     }
 }
 ```
@@ -1692,47 +1974,6 @@ func TestNewServer(t *testing.T) {
 }
 ```
 
-### Integration Testing Pattern
-```go
-import (
-    "fmt"
-    "net/http"
-    "testing"
-)
-
-// HTTP API integration testing
-func TestHealthEndpoint(t *testing.T) {
-    // Setup test server
-    config := ServerConfig{
-        Host: "localhost",
-        Port: "0", // Use random port
-    }
-    server, err := NewServer(config)
-    if err != nil {
-        t.Fatalf("Failed to create server: %v", err)
-    }
-
-    // Start server in goroutine
-    go func() {
-        if err := server.Start(); err != nil {
-            t.Errorf("Server failed to start: %v", err)
-        }
-    }()
-    defer server.Shutdown()
-
-    // Test health endpoint
-    resp, err := http.Get(fmt.Sprintf("http://%s/health", server.Address()))
-    if err != nil {
-        t.Fatalf("Health check failed: %v", err)
-    }
-    defer resp.Body.Close()
-
-    if resp.StatusCode != http.StatusOK {
-        t.Errorf("Expected status 200, got %d", resp.StatusCode)
-    }
-}
-```
-
 ---
 
 ## HTTP Server Architecture Patterns
@@ -1753,10 +1994,11 @@ type HealthChecker interface {
 }
 
 type CheckResult struct {
-    Status  string        `json:"status"`
-    Message string        `json:"message,omitempty"`
-    Latency time.Duration `json:"latency_ms"`
-    Details map[string]any `json:"details,omitempty"`
+    Status    string         `json:"status"`
+    Message   string         `json:"message,omitempty"`
+    Latency   time.Duration  `json:"latency_ms"`
+    RequestID string         `json:"request_id,omitempty"`
+    Details   map[string]any `json:"details,omitempty"`
 }
 
 // Implementation example
@@ -1775,56 +2017,21 @@ func (s *StorageHealthChecker) Check(ctx context.Context) CheckResult {
     _, err := s.storage.ListServiceRegistrations(ctx)
     latency := time.Since(start)
     
-    if err != nil {
-        return CheckResult{
-            Status:  "unhealthy",
-            Message: "Storage connectivity failed",
-            Latency: latency,
-            Details: map[string]any{"error": err.Error()},
-        }
+    result := CheckResult{
+        Latency:   latency,
+        RequestID: GetRequestID(ctx), // Include request correlation
     }
     
-    return CheckResult{
-        Status:  "healthy",
-        Message: "Storage operational",
-        Latency: latency,
+    if err != nil {
+        result.Status = "unhealthy"
+        result.Message = "Storage connectivity failed"
+        result.Details = map[string]any{"error": err.Error()}
+    } else {
+        result.Status = "healthy"
+        result.Message = "Storage operational"
     }
-}
-```
-
-### Request ID Generation Pattern
-```go
-import (
-    "context"
-    "crypto/rand"
-    "encoding/hex"
-    "fmt"
-    "net/http"
-)
-
-// Secure request ID generation
-func generateRequestID() (string, error) {
-    bytes := make([]byte, 8)
-    if _, err := rand.Read(bytes); err != nil {
-        return "", fmt.Errorf("failed to generate request ID: %w", err)
-    }
-    return hex.EncodeToString(bytes), nil
-}
-
-// Use in middleware
-func RequestIDMiddleware(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        requestID, err := generateRequestID()
-        if err != nil {
-            // Handle error appropriately
-            http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-            return
-        }
-        
-        ctx := WithRequestID(r.Context(), requestID)
-        w.Header().Set("X-Request-ID", requestID)
-        next.ServeHTTP(w, r.WithContext(ctx))
-    })
+    
+    return result
 }
 ```
 
@@ -1862,12 +2069,12 @@ func ReadJSON(r *http.Request, dst any) error {
     return nil
 }
 
-// Error response helper
-func WriteError(w http.ResponseWriter, status int, message string, requestID string) {
+// Error response helper with request correlation
+func WriteError(w http.ResponseWriter, r *http.Request, status int, message string) {
     response := ErrorResponse{
         Error:     message,
         Code:      getErrorCode(status),
-        RequestID: requestID,
+        RequestID: GetRequestID(r.Context()), // Include request correlation
         Timestamp: time.Now(),
     }
     
@@ -1921,6 +2128,20 @@ func getErrorCode(status int) string {
 func NewServer(config ServerConfig) (*Server, error) {
     // ... implementation
 }
+
+// generateRequestID creates a cryptographically secure request ID for correlation tracking.
+// Uses crypto/rand to generate random bytes, then hex-encodes to a string.
+//
+// Returns:
+//   - string: Hex-encoded request ID of RequestIDHexLength characters
+//   - error: Generation error if crypto/rand fails
+//
+// Security: Uses cryptographically secure random generation for correlation safety.
+// The request ID is not used for authentication and provides sufficient entropy for
+// request correlation in high-throughput scenarios.
+func generateRequestID() (string, error) {
+    // ... implementation
+}
 ```
 
 ### Package Documentation Pattern
@@ -1929,11 +2150,12 @@ func NewServer(config ServerConfig) (*Server, error) {
 //
 // This package implements the core HTTP server functionality with structured
 // configuration management, graceful shutdown capabilities, middleware support,
-// and security-first design principles.
+// request logging, and security-first design principles.
 //
 // Key Features:
 //   - Production-ready HTTP server lifecycle with graceful shutdown
 //   - Industry-standard middleware infrastructure with conditional support
+//   - Request logging with cryptographically secure correlation IDs
 //   - Comprehensive input validation with injection prevention
 //   - Context-based shutdown coordination and timeout management
 //   - Thread-safe concurrent access patterns
@@ -1943,6 +2165,13 @@ func NewServer(config ServerConfig) (*Server, error) {
 //   - Enhanced middleware stack with conditional application (UseIf)
 //   - Method chaining for fluent API design
 //   - Correct execution order (last registered becomes outermost)
+//
+// Request Logging:
+//   - Cryptographically secure request ID generation using crypto/rand
+//   - Structured JSON logging with log/slog for container environments
+//   - Sensitive header filtering for security compliance
+//   - Performance metrics including request duration and response sizes
+//   - Environment-driven configuration with centralized constants
 //
 // Container Integration:
 //   - SIGINT and SIGTERM signal handling for orchestration platforms
@@ -1983,7 +2212,7 @@ package server
 ## File Organization
 
 ### Naming Conventions
-- **Files**: Use `snake_case` for file names (e.g., `service_registration.go`)
+- **Files**: Use `snake_case` for file names (e.g., `service_registration.go`, `request_logging.go`)
 - **Types**: One primary type per file with co-located tests
 - **Tests**: Co-locate tests as `type_test.go` alongside `type.go`
 - **Packages**: Use descriptive, lowercase package names
@@ -1993,13 +2222,19 @@ package server
 cipher-hub/
 ├── cmd/cipher-hub/           # Application entry point with signal handling
 ├── internal/
+│   ├── config/              # Centralized configuration management (Phase 2.1.2 ✅)
+│   │   ├── env.go           # Environment variable constants and helpers
+│   │   └── docs.go          # Package documentation
 │   ├── models/              # Core data models (Phase 1 ✅)
 │   ├── storage/             # Storage interface (Phase 1 ✅)  
 │   ├── server/              # HTTP server infrastructure (Phase 2 → Target 2.1 ✅)
 │   │   ├── server.go        # Complete HTTP server with graceful shutdown (✅)
 │   │   ├── server_test.go   # Comprehensive security and lifecycle testing (✅)
 │   │   ├── middleware.go    # Complete middleware infrastructure (✅)
-│   │   └── middleware_test.go # Comprehensive middleware testing (✅)
+│   │   ├── middleware_test.go # Comprehensive middleware testing (✅)
+│   │   ├── request_logging.go # Production-ready request logging middleware (✅)
+│   │   ├── request_logging_test.go # Comprehensive request logging testing (✅)
+│   │   └── doc.go           # Package documentation
 │   └── handlers/            # HTTP request handlers (Phase 2 → Target 2.1 📋)
 ├── checkpoint.md           # Development progress and next steps
 ├── go.mod                  # Go module definition
@@ -2033,6 +2268,7 @@ cipher-hub/
 - [ ] Graceful shutdown with proper resource cleanup
 - [ ] Signal handling without race conditions
 - [ ] Middleware security patterns with nil handler protection
+- [ ] Request logging security with sensitive header filtering
 
 ### Key Material Protection Standards
 - [ ] Use `json:"-"` tags on all key material fields
@@ -2070,6 +2306,15 @@ cipher-hub/
 - [ ] Server integration maintains thread safety during setup
 - [ ] Comprehensive testing covers security scenarios and edge cases
 
+### Request Logging Security Requirements
+- [ ] Cryptographically secure request ID generation using crypto/rand
+- [ ] Sensitive header filtering prevents credential/token leakage
+- [ ] Type-safe context operations prevent value collision
+- [ ] Configuration validation with secure defaults and bounds
+- [ ] Performance optimization prevents resource exhaustion
+- [ ] Structured logging suitable for container environments
+- [ ] Comprehensive testing including security and concurrency scenarios
+
 ### Shutdown Security Requirements
 - [ ] In-flight requests complete within timeout bounds
 - [ ] Resource cleanup handles all failure scenarios
@@ -2081,6 +2326,6 @@ cipher-hub/
 
 ---
 
-*Implementation Style Guide Version: 1.7*  
+*Implementation Style Guide Version: 1.8*  
 *Last Updated: Current Session*  
-*Focus: Security-first implementation patterns with complete HTTP server lifecycle, middleware infrastructure, and graceful shutdown for Step 2.1.2.1 completion*
+*Focus: Security-first implementation patterns with complete HTTP server lifecycle, middleware infrastructure, request logging, and graceful shutdown for Step 2.1.2.2 completion*
