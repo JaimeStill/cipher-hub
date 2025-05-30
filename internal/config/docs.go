@@ -23,11 +23,30 @@
 //   - CIPHER_HUB_LOGGING_ENABLED=true
 //   - CIPHER_HUB_CORS_ORIGINS=http://localhost:3000,https://app.example.com
 //
+// Helper Functions:
+// The package provides type-safe helper functions for common configuration types:
+//   - GetEnvString: String values with trimming and default support
+//   - GetEnvBool: Boolean values supporting flexible representations (1/t/true/yes/y/on for true, 0/f/false/no/n/off for false)
+//   - GetEnvStringSlice: Comma-separated lists with trimming and filtering
+//   - GetEnvInt: Integer values with strconv.Atoi parsing
+//   - GetEnvDuration: Duration values with time.ParseDuration support
+//
+// Boolean Environment Variables:
+// GetEnvBool supports common boolean representations used across different systems:
+//   - Truthy: "1", "t", "T", "true", "TRUE", "True", "yes", "YES", "Yes", "y", "Y", "on", "ON", "On"
+//   - Falsy: "0", "f", "F", "false", "FALSE", "False", "no", "NO", "No", "n", "N", "off", "OFF", "Off"
+//   - Any unrecognized value falls back to the provided default
+//
+// Examples:
+//   - CIPHER_HUB_LOGGING_ENABLED=1 (Docker-style)
+//   - CIPHER_HUB_CORS_ENABLED=yes (script-friendly)
+//   - CIPHER_HUB_DEBUG=on (common convention)
+//
 // Usage Pattern:
 //
 //	import "cipher-hub/internal/config"
 //
-//	// Using constants for consistency
+//	// Using helper functions for type-safe configuration loading
 //	host := config.GetEnvString(config.EnvHost, "localhost")
 //	enabled := config.GetEnvBool(config.EnvLoggingEnabled, true)
 //	timeout := config.GetEnvDuration(config.EnvReadTimeout, 15*time.Second)
@@ -45,12 +64,8 @@
 //
 // Type Safety:
 // The helper functions provide type-safe access to environment variables
-// with automatic parsing and validation for common types:
-//   - GetEnvString: String values with trimming and empty string handling
-//   - GetEnvBool: Boolean values with "true"/"false" parsing
-//   - GetEnvDuration: Duration values with time.ParseDuration support
-//   - GetEnvStringSlice: Comma-separated lists with trimming and filtering
-//   - GetEnvInt: Integer values with strconv.Atoi parsing
+// with automatic parsing and validation for common types. Invalid values
+// gracefully fall back to provided defaults, ensuring configuration robustness.
 //
 // Security Considerations:
 // - No sensitive values are logged during configuration loading

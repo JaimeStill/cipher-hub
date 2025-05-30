@@ -1558,3 +1558,228 @@ func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
 		t.Errorf("Response body = %q, want %q", w.Body.String(), "middleware chain test")
 	}
 }
+
+func TestServer_CORSMiddleware(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Configure CORS middleware with specific origins
+	corsConfig := CORSConfig{
+		Enabled: true,
+		Origins: []string{"http://localhost:3000", "https://app.example.com"},
+		Methods: DefaultCORSMethods,
+		Headers: DefaultCORSHeaders,
+	}
+
+	// Add middleware with conditional application
+	server.Middleware().
+		Use(RequestLoggingMiddleware()).
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig))
+
+	// Set test handler
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request ID is available in handler
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not available in handler context")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("CORS test response"))
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test CORS request integration
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+
+	w := httptest.NewRecorder()
+
+	// Execute request through server
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify request ID header was added by request logging middleware
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Error("X-Request-ID header not set by request logging middleware")
+	}
+
+	// Verify CORS headers were added by CORS middleware
+	corsOrigin := w.Header().Get("Access-Control-Allow-Origin")
+	if corsOrigin != "http://localhost:3000" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", corsOrigin, "http://localhost:3000")
+	}
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "CORS test response" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "CORS test response")
+	}
+}
+
+func TestServer_CORSMiddleware_Conditional(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Configure CORS middleware without origins (should not be applied)
+	corsConfig := CORSConfig{
+		Enabled: false,
+		Origins: []string{}, // Empty origins
+	}
+
+	// Add middleware with conditional application
+	server.Middleware().
+		Use(RequestLoggingMiddleware()).
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)) // Should not apply
+
+	// Set test handler
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := GetRequestID(r.Context())
+		if requestID == "" {
+			t.Error("Request ID not available in handler context")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("no CORS test"))
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test request without CORS
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify request ID header was added by request logging middleware
+	if w.Header().Get("X-Request-ID") == "" {
+		t.Error("X-Request-ID header should be present from request logging")
+	}
+
+	// Verify NO CORS headers were added (middleware not applied)
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Error("CORS headers should not be present when middleware not applied")
+	}
+
+	// Verify response
+	if w.Code != http.StatusOK {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if w.Body.String() != "no CORS test" {
+		t.Errorf("Response body = %q, want %q", w.Body.String(), "no CORS test")
+	}
+}
+
+func TestServer_CORSMiddleware_Preflight(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Configure CORS middleware with origins
+	corsConfig := CORSConfig{
+		Enabled: true,
+		Origins: []string{"http://localhost:3000"},
+		Methods: DefaultCORSMethods,
+		Headers: DefaultCORSHeaders,
+	}
+
+	// Add middleware chain
+	server.Middleware().
+		Use(RequestLoggingMiddleware()).
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig))
+
+	// Set test handler (should not be called for OPTIONS preflight)
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Handler should not be called for preflight OPTIONS request")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test preflight OPTIONS request
+	req := httptest.NewRequest("OPTIONS", "/test", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify request ID header was added
+	if w.Header().Get("X-Request-ID") == "" {
+		t.Error("X-Request-ID header should be present")
+	}
+
+	// Verify CORS preflight headers
+	if w.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Error("CORS origin header should be set for preflight")
+	}
+
+	if w.Header().Get("Access-Control-Allow-Methods") == "" {
+		t.Error("CORS methods header should be set for preflight")
+	}
+
+	if w.Header().Get("Access-Control-Allow-Headers") == "" {
+		t.Error("CORS headers header should be set for preflight")
+	}
+
+	// Verify preflight response status
+	if w.Code != http.StatusOK {
+		t.Errorf("Preflight response status = %d, want %d", w.Code, http.StatusOK)
+	}
+}

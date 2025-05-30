@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -60,18 +59,10 @@ type RequestLoggingConfig struct {
 
 // LoadFromEnv populates logging configuration from environment variables
 func (c *RequestLoggingConfig) LoadFromEnv() {
-	if enabled := os.Getenv(config.EnvLoggingEnabled); enabled != "" {
-		c.Enabled = strings.ToLower(enabled) == "true"
-	}
-	if level := os.Getenv(config.EnvLogLevel); level != "" {
-		c.Level = strings.ToLower(level)
-	}
-	if format := os.Getenv(config.EnvLogFormat); format != "" {
-		c.Format = strings.ToLower(format)
-	}
-	if headers := os.Getenv(config.EnvLogIncludeHeaders); headers != "" {
-		c.IncludeHeaders = strings.ToLower(headers) == "true"
-	}
+	c.Enabled = config.GetEnvBool(config.EnvLoggingEnabled, c.Enabled)
+	c.Level = config.GetEnvString(config.EnvLogLevel, c.Level)
+	c.Format = config.GetEnvString(config.EnvLogFormat, c.Format)
+	c.IncludeHeaders = config.GetEnvBool(config.EnvLogIncludeHeaders, c.IncludeHeaders)
 }
 
 // ApplyDefautls sets secure default values for logging configuration
