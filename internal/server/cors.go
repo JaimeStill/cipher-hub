@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -36,20 +37,32 @@ type CORSConfig struct {
 	Credentials bool     `json:"credentials"`
 }
 
-// LoadFromEnv populates CORS configuration from envirnoment variables using centralized helper functions
+// LoadFromEnv populates CORS configuration from environment variables using centralized helper functions
 func (c *CORSConfig) LoadFromEnv() {
-	c.Enabled = config.GetEnvBool(config.EnvCORSEnabled, c.Enabled)
+	// Load origins first so we can use them for auto-enable logic
 	c.Origins = config.GetEnvStringSlice(config.EnvCORSOrigins, ",", c.Origins)
+
+	// Load other settings
 	c.Methods = config.GetEnvString(config.EnvCORSMethods, c.Methods)
 	c.Headers = config.GetEnvString(config.EnvCORSHeaders, c.Headers)
 	c.MaxAge = config.GetEnvString(config.EnvCORSMaxAge, c.MaxAge)
 	c.Credentials = config.GetEnvBool(config.EnvCORSCredentials, c.Credentials)
+
+	// Handle Enabled with auto-enable logic:
+	// If CORS_ENABLED was explicitly set in environment, use that value
+	// Otherwise, auto-enable if origins are configured
+	if envEnabled := os.Getenv(config.EnvCORSEnabled); envEnabled != "" {
+		c.Enabled = config.GetEnvBool(config.EnvCORSEnabled, c.Enabled)
+	} else {
+		// Auto-enable CORS if origins are configured, disable if not
+		c.Enabled = len(c.Origins) > 0
+	}
 }
 
 // ApplyDefaults sets secure default values for CORS configuration
 func (c *CORSConfig) ApplyDefaults() {
-	// Enable CORS if origins are configured, disable if not
-	c.Enabled = len(c.Origins) > 0
+	// DON'T auto-enable here - origins haven't been loaded yet
+	// The auto-enable logic is now in LoadFromEnv()
 
 	// Set default methods, headers, and max age
 	if c.Methods == "" {
@@ -63,6 +76,7 @@ func (c *CORSConfig) ApplyDefaults() {
 	}
 
 	// Note: Credentials defaults to false (secure default - no credentials unless explicitly enabled)
+	// Note: Enabled defaults to false and is auto-enabled in LoadFromEnv() based on Origins
 }
 
 // IsOriginAllowed checks if the given origin is in the allowed origins list.
@@ -110,12 +124,22 @@ func (c *CORSConfig) Validate() error {
 		}
 
 		// Validate origin URL format
-		if _, err := url.Parse(origin); err != nil {
+		parsedURL, err := url.Parse(origin)
+		if err != nil {
 			return fmt.Errorf(
 				"%s: invalid origin URL %q: %w",
 				CORSErrorPrefix,
 				origin,
 				err,
+			)
+		}
+
+		// Check that it has a scheme and host (required for valid origins)
+		if parsedURL.Scheme == "" || parsedURL.Host == "" {
+			return fmt.Errorf(
+				"%s: invalid origin URL %q: missing scheme or host",
+				CORSErrorPrefix,
+				origin,
 			)
 		}
 	}

@@ -1580,8 +1580,8 @@ func TestServer_CORSMiddleware(t *testing.T) {
 
 	// Add middleware with conditional application
 	server.Middleware().
-		Use(RequestLoggingMiddleware()).
-		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig))
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)).
+		Use(RequestLoggingMiddleware())
 
 	// Set test handler
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1656,8 +1656,8 @@ func TestServer_CORSMiddleware_Conditional(t *testing.T) {
 
 	// Add middleware with conditional application
 	server.Middleware().
-		Use(RequestLoggingMiddleware()).
-		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)) // Should not apply
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)).
+		Use(RequestLoggingMiddleware())
 
 	// Set test handler
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1728,10 +1728,11 @@ func TestServer_CORSMiddleware_Preflight(t *testing.T) {
 		Headers: DefaultCORSHeaders,
 	}
 
-	// Add middleware chain
+	// IMPORTANT: Register middleware in this order so request logging runs FIRST
+	// This ensures X-Request-ID is added before CORS handles OPTIONS and returns early
 	server.Middleware().
-		Use(RequestLoggingMiddleware()).
-		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig))
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)). // Register CORS first
+		Use(RequestLoggingMiddleware())                                           // Register logging last (makes it outermost)
 
 	// Set test handler (should not be called for OPTIONS preflight)
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1760,7 +1761,7 @@ func TestServer_CORSMiddleware_Preflight(t *testing.T) {
 
 	server.httpServer.Handler.ServeHTTP(w, req)
 
-	// Verify request ID header was added
+	// Verify request ID header was added by request logging middleware
 	if w.Header().Get("X-Request-ID") == "" {
 		t.Error("X-Request-ID header should be present")
 	}
