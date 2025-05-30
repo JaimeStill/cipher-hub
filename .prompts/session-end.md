@@ -1,5 +1,11 @@
 # Session End
 
+## Variables
+
+- [STEP_NUMBER] - the roadmap step completed
+
+## Prompt
+
 Execute the following prompt sequence:
 
 1. `.prompts/roadmap-update.md`
@@ -7,6 +13,7 @@ Execute the following prompt sequence:
 
 The `readme-update.md` prompt relies on the updated details for `roadmap.md` generated in the first step, so be sure to refer to the adjusted roadmap artifact when updating the readme.
 
-## Guidelines
+### Guidelines
+
 - Avoid emojis
 - Artifacts only - no commentary
