@@ -29,7 +29,7 @@ type ErrorResponse struct {
 	Message   string                     `json:"message"`
 	RequestID string                     `json:"request_id"`
 	Timestamp time.Time                  `json:"timestamp"`
-	Details   interface{}                `json:"details,omitempty"`
+	Details   any                        `json:"details,omitempty"`
 }
 
 // ErrorResponseConfig holds configuration for error response middleware
@@ -53,7 +53,7 @@ func NewErrorResponse(err error, requestID string) *ErrorResponse {
 }
 
 // NewErrorResponseWithDetails creates an error response with additional details
-func NewErrorResponseWithDetails(err error, requestID string, details interface{}) *ErrorResponse {
+func NewErrorResponseWithDetails(err error, requestID string, details any) *ErrorResponse {
 	response := NewErrorResponse(err, requestID)
 	response.Details = details
 	return response
@@ -228,7 +228,7 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 //   - r: HTTP request for context
 //   - err: Error to handle and format
 //   - details: Additional details safe for client consumption
-func HandleErrorWithDetails(w http.ResponseWriter, r *http.Request, err error, details interface{}) {
+func HandleErrorWithDetails(w http.ResponseWriter, r *http.Request, err error, details any) {
 	requestID := GetRequestID(r.Context())
 	classification := models.ClassifyError(err)
 

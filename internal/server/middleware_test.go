@@ -258,15 +258,15 @@ func TestMiddlewareStack_Apply_Order(t *testing.T) {
 
 	finalHandler.ServeHTTP(w, req)
 
-	// Verify execution order: last registered middleware executes first
+	// Verify execution order: first registered middleware executes first (conventional)
 	expectedOrder := []string{
-		"middleware3-before", // Last registered, outermost
+		"middleware1-before", // First registered, outermost
 		"middleware2-before",
-		"middleware1-before", // First registered, innermost
+		"middleware3-before", // Last registered, innermost
 		"handler",
-		"middleware1-after", // First registered, innermost
+		"middleware3-after", // Last registered, innermost
 		"middleware2-after",
-		"middleware3-after", // Last registered, outermost
+		"middleware1-after", // First registered, outermost
 	}
 
 	if len(executionOrder) != len(expectedOrder) {

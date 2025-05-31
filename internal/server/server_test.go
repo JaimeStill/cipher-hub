@@ -1499,6 +1499,7 @@ func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
 
 	// Add multiple middleware including request logging
 	server.Middleware().
+		Use(RequestLoggingMiddleware()).
 		Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Verify request ID is available in other middleware
@@ -1510,8 +1511,7 @@ func TestServer_RequestLoggingWithOtherMiddleware(t *testing.T) {
 				w.Header().Set("X-Test-Middleware", "applied")
 				next.ServeHTTP(w, r)
 			})
-		}).
-		Use(RequestLoggingMiddleware())
+		})
 
 	// Set test handler
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1733,8 +1733,8 @@ func TestServer_CORSMiddleware_Preflight(t *testing.T) {
 	// IMPORTANT: Register middleware in this order so request logging runs FIRST
 	// This ensures X-Request-ID is added before CORS handles OPTIONS and returns early
 	server.Middleware().
-		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)). // Register CORS first
-		Use(RequestLoggingMiddleware())                                           // Register logging last (makes it outermost)
+		Use(RequestLoggingMiddleware()).                                         // Register logging last (makes it outermost)
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)) // Register CORS first
 
 	// Set test handler (should not be called for OPTIONS preflight)
 	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

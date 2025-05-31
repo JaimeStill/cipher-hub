@@ -90,12 +90,13 @@ func (ms *MiddlewareStack) UseIf(condition bool, middleware Middleware) *Middlew
 }
 
 // Apply wraps the provided handler with all registered middleware functions.
-// Middleware is applied in registration order to achieve reverse execution order
-// (last registered becomes outermost).
+// Middleware is applied in reverse registration order to achieve intuitive execution order
+// (first registered becomes outermost and executes first).
 //
-// This follows the standard middleware pattern where middleware closer to
-// the registration point executes later in the request chain but earlier
-// in the response chain.
+// This follows conventional middleware patterns where first registered = first executed:
+//   - Express.js: app.use(a); app.use(b); app.use(c) → execution: a → b → c → handler
+//   - Gin: r.Use(a); r.Use(b); r.Use(c) → execution: a → b → c → handler
+//   - Most Go HTTP middleware libraries follow this pattern
 //
 // Performance: Middleware is applied once during server start for optimal
 // runtime performance. The middleware chain is pre-built and reused for
@@ -115,11 +116,11 @@ func (ms *MiddlewareStack) UseIf(condition bool, middleware Middleware) *Middlew
 // Execution Flow Example:
 //
 //	stack.Use(A).Use(B).Use(C)
-//	Request: C -> B -> A -> handler
-//	Response: handler -> A -> B -> C
+//	Request: A → B → C → handler
+//	Response: handler → C → B → A
 //
-// This ensures middleware registered later can wrap and control middleware
-// registered earlier, following standard middleware composition patterns.
+// This ensures middleware registered first can establish context (like request IDs)
+// that later middleware can depend on, following natural dependency ordering.
 func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
 	if handler == nil {
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,8 +130,9 @@ func (ms *MiddlewareStack) Apply(handler http.Handler) http.Handler {
 
 	result := handler
 
-	// Apply middleware in registration order to make last registered outermost
-	for i := 0; i < len(ms.middlewares); i++ {
+	// Apply middleware in REVERSE registration order to make first registered outermost
+	// This achieves intuitive execution order: first registered = first executed
+	for i := len(ms.middlewares) - 1; i >= 0; i-- {
 		result = ms.middlewares[i](result)
 	}
 
