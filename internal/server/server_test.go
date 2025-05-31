@@ -1,7 +1,9 @@
 package server
 
 import (
+	"cipher-hub/internal/models"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1782,5 +1784,223 @@ func TestServer_CORSMiddleware_Preflight(t *testing.T) {
 	// Verify preflight response status
 	if w.Code != http.StatusOK {
 		t.Errorf("Preflight response status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServer_ErrorResponseMiddleware(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add middleware stack with error response handling
+	server.Middleware().
+		Use(RequestLoggingMiddleware()).
+		Use(ErrorResponseMiddleware())
+
+	// Set test handler that returns an error
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate a validation error
+		HandleError(w, r, models.ErrInvalidID)
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test error response integration
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	// Execute request through server
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify request ID header was added by request logging middleware
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Error("X-Request-ID header not set by request logging middleware")
+	}
+
+	// Verify error response status
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	// Verify JSON error response
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %v, want application/json", contentType)
+	}
+
+	// Parse and verify error response structure
+	var response ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Errorf("Failed to decode JSON error response: %v", err)
+	}
+
+	if response.RequestID != requestID {
+		t.Errorf("Error response RequestID = %v, want %v", response.RequestID, requestID)
+	}
+
+	if response.Error.Code != models.ErrorCodeValidation {
+		t.Errorf("Error code = %v, want %v", response.Error.Code, models.ErrorCodeValidation)
+	}
+
+	if response.Message != "Invalid identifier provided" {
+		t.Errorf("Error message = %v, want 'Invalid identifier provided'", response.Message)
+	}
+}
+
+func TestServer_ErrorResponseMiddleware_PanicRecovery(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Add middleware stack with error response handling
+	server.Middleware().
+		Use(RequestLoggingMiddleware()).
+		Use(ErrorResponseMiddleware())
+
+	// Set test handler that panics
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("test panic for error recovery")
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test panic recovery
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	// Should not panic
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify request ID header was added
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Error("X-Request-ID header should be present")
+	}
+
+	// Verify panic was recovered and returned as error response
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("Response status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	// Verify JSON error response
+	var response ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Errorf("Failed to decode JSON error response: %v", err)
+	}
+
+	if response.RequestID != requestID {
+		t.Errorf("Error response RequestID = %v, want %v", response.RequestID, requestID)
+	}
+
+	if response.Error.Code != models.ErrorCodeInternal {
+		t.Errorf("Error code = %v, want %v", response.Error.Code, models.ErrorCodeInternal)
+	}
+
+	// Verify panic details are not exposed in response
+	if strings.Contains(response.Message, "test panic") {
+		t.Error("Panic details should not be exposed in error response")
+	}
+}
+
+func TestServer_ErrorResponseMiddleware_WithCORS(t *testing.T) {
+	config := ServerConfig{
+		Host: "localhost",
+		Port: "0",
+	}
+
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("NewServer() unexpected error: %v", err)
+	}
+
+	// Configure CORS
+	corsConfig := CORSConfig{
+		Enabled: true,
+		Origins: []string{"http://localhost:3000"},
+		Methods: DefaultCORSMethods,
+		Headers: DefaultCORSHeaders,
+	}
+
+	// Add middleware stack with all middleware types
+	server.Middleware().
+		Use(RequestLoggingMiddleware()).
+		UseIf(len(corsConfig.Origins) > 0, CORSMiddlewareWithConfig(corsConfig)).
+		Use(ErrorResponseMiddleware())
+
+	// Set test handler that returns an error
+	server.SetHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		HandleError(w, r, models.ErrInvalidName)
+	}))
+
+	// Start server
+	err = server.Start()
+	if err != nil {
+		t.Fatalf("Start() unexpected error: %v", err)
+	}
+	defer func() {
+		if err := server.Shutdown(); err != nil {
+			t.Logf("Cleanup shutdown error: %v", err)
+		}
+	}()
+
+	// Test error response with CORS
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	w := httptest.NewRecorder()
+
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	// Verify all middleware applied correctly
+	if w.Header().Get("X-Request-ID") == "" {
+		t.Error("Request logging middleware should set request ID")
+	}
+
+	if w.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Error("CORS middleware should set CORS headers")
+	}
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Error response middleware should set status %d, got %d", http.StatusBadRequest, w.Code)
+	}
+
+	// Verify error response structure
+	var response ErrorResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Errorf("Failed to decode JSON error response: %v", err)
+	}
+
+	if response.Error.Code != models.ErrorCodeValidation {
+		t.Errorf("Error code = %v, want %v", response.Error.Code, models.ErrorCodeValidation)
 	}
 }
