@@ -130,10 +130,15 @@
   - Integrated CORS events with existing request logging middleware for security monitoring
   - Applied conditional middleware using `UseIf()` pattern for environment-based deployment
   - Added security-first defaults requiring explicit origin configuration
-- [ ] **Step 2.1.2.4**: Create error response formatting middleware
+- [x] **Step 2.1.2.4**: Create error response formatting middleware
   - Standardize JSON error response format with request tracing
   - Add error code mapping from internal errors with security consciousness
   - Ensure no sensitive data leaks in error responses
+  - Implemented separation of concerns with core error classification in `internal/models/errors.go`
+  - Created HTTP error response structures and middleware in `internal/server/error_response.go`
+  - Added panic recovery with structured error responses and stack trace logging
+  - Integrated request correlation for error tracing using existing request logging infrastructure
+  - Applied security-first design preventing sensitive information leakage in responses
 - [ ] **Step 2.1.2.5**: Implement security headers middleware
   - Add comprehensive security headers (HSTS, CSP, X-Frame-Options)
   - Include `X-Content-Type-Options: nosniff` and XSS protection
